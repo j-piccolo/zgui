@@ -154,6 +154,8 @@ pub struct App {
     style_threads: Option<usize>,
     /// How many workers the layout engine may use, when the default is not wanted.
     layout_threads: Option<usize>,
+    /// Whether it launches with no window, opening what it needs while it runs.
+    windowless: bool,
 }
 
 impl Default for App {
@@ -179,7 +181,18 @@ impl App {
             menu: None,
             style_threads: None,
             layout_threads: None,
+            windowless: false,
         }
+    }
+
+    /// Launches with no window at all, and stays up until it is told to quit.
+    ///
+    /// What a desktop shell wants: its windows are one per output and per pop-up, opened from
+    /// [`App::with_context`] as outputs appear, and none of them is the application.
+    pub fn with_no_window(mut self) -> Self {
+        self.windowless = true;
+        self.exit = ExitPolicy::Explicit;
+        self
     }
 
     /// How many workers the layout engine may use.
@@ -626,7 +639,8 @@ impl Runtime {
         });
         let application_id = app.attributes.application_id.clone();
         let primary = commands.mint();
-        let live = vec![LiveWindow {
+        let windowless = app.windowless;
+        let mut live = vec![LiveWindow {
             token: primary,
             spec: Box::new(WindowSpec::new(
                 app.attributes,
@@ -642,6 +656,9 @@ impl Runtime {
                 Rc::clone(windows_api.capabilities_slot()),
             ),
         }];
+        if windowless {
+            live.clear();
+        }
         Self {
             app_options: app.options,
             live,
@@ -964,6 +981,18 @@ impl Runtime {
         }
     }
 
+    /// Runs the effects and tasks that are ready, when no window has a frame to run them in.
+    ///
+    /// The reactive flush belongs to a frame. An application with no window open has none, and
+    /// what is waiting is very likely the effect that would open one.
+    fn flush_without_windows(&self) {
+        if self.windows.is_empty() {
+            self.scope.with(|| {
+                zgui_reactive::flush();
+            });
+        }
+    }
+
     /// Stops the application when its policy says the windows that are left are not enough.
     fn apply_exit_policy(&self, cx: &dyn PlatformCx) {
         let done = match self.exit {
@@ -1120,6 +1149,7 @@ impl AppHandler for Runtime {
             let windows = self.windows_api.clone();
             self.scope.with(|| windows.set_monitors(monitors));
         }
+        self.flush_without_windows();
 
         // Every window the application wants and has no surface for. At launch that is the window
         // it launched with; after a suspend it is all of them, which is why a specification is kept
@@ -1323,6 +1353,7 @@ impl AppHandler for Runtime {
             _ => {}
         }
         self.apply_menu(cx);
+        self.flush_without_windows();
         // Every wake is a turn of the loop with a platform context in hand, which is what carrying
         // out a queued window needs. A wake that queued nothing drains nothing.
         if !self.commands.is_empty() {

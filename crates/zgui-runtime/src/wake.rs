@@ -146,6 +146,8 @@ impl FrameWaker for RuntimeWaker {
             .expect("the set is not poisoned")
             .clone();
         if surfaces.is_empty() {
+            // No window to draw the work in: the loop runs it on its own turn instead.
+            self.platform.wake(WakeReason::AppWork);
             return;
         }
         self.platform.wake(WakeReason::ReactiveWork {
@@ -207,13 +209,15 @@ mod tests {
     }
 
     #[test]
-    fn a_wake_belonging_to_no_surface_goes_nowhere() {
+    fn a_wake_belonging_to_no_surface_names_none() {
         let platform = Arc::new(Recording::default());
         let gate = Arc::new(FrameGate::new());
         let waker = RuntimeWaker::new(Arc::clone(&platform) as Arc<dyn Waker>, gate);
         waker.owns(SurfaceId::new(3));
         waker.disowns(SurfaceId::new(3));
         waker.wake();
-        assert!(platform.0.lock().expect("not poisoned").is_empty());
+        // The loop is still woken, to run the work on a turn of its own.
+        let recorded = platform.0.lock().expect("not poisoned");
+        assert_eq!(recorded.as_slice(), [Vec::<SurfaceId>::new()]);
     }
 }
