@@ -133,6 +133,63 @@ pub fn set_pointer_passthrough(
     Ok(())
 }
 
+/// Commits state set between frames, unless the surface is unmapped.
+///
+/// A commit on an unmapped surface is the one that asks to be mapped again, so there the state
+/// waits for [`set_visible`] to make it.
+fn commit_now(surface: &WaylandSurface) {
+    if !surface.shared().unmapped {
+        surface.wl_surface().commit();
+    }
+}
+
+/// Limits where the surface takes the pointer. Committed at once, as passthrough is.
+pub fn set_input_region(
+    surface: &WaylandSurface,
+    rects: Option<&[zgui_geom::Rect<CssPx, Css>]>,
+) -> Result<(), Unsupported> {
+    let wl = surface.wl_surface();
+    match rects {
+        Some(rects) => {
+            let region = surface.region_of(rects);
+            wl.set_input_region(Some(&region));
+            region.destroy();
+        }
+        None => wl.set_input_region(None),
+    }
+    commit_now(surface);
+    Ok(())
+}
+
+/// Asks for blur behind `rects` of the surface, or for none.
+pub fn set_blur_region(
+    surface: &WaylandSurface,
+    rects: Option<&[zgui_geom::Rect<CssPx, Css>]>,
+) -> Result<(), Unsupported> {
+    let effect = surface.effect().ok_or(Unsupported)?;
+    match rects {
+        Some(rects) => {
+            let region = surface.region_of(rects);
+            effect.set_blur_region(Some(&region));
+            region.destroy();
+        }
+        None => effect.set_blur_region(None),
+    }
+    commit_now(surface);
+    Ok(())
+}
+
+/// Moves a shell layer to `placement`.
+pub fn set_layer_placement(
+    surface: &WaylandSurface,
+    placement: &zgui_platform::LayerPlacement,
+) -> Result<(), Unsupported> {
+    let layer = surface.role().layer().ok_or(Unsupported)?;
+    crate::surface::role::layer::apply(layer, placement);
+    commit_now(surface);
+    Ok(())
+}
+
 /// Everything that has to ride the commit a frame of `size` at `scale` is about to make.
 ///
 /// Called between the frame's work being submitted and its buffer being handed over, which is the

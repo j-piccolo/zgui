@@ -52,6 +52,8 @@ pub struct Windows {
     registry: RwSignal<Vec<WindowHandle>, zgui_reactive::LocalStorage>,
     /// What this desktop can do.
     capabilities: Rc<RefCell<PlatformCapabilities>>,
+    /// The outputs the platform last reported.
+    monitors: RwSignal<Vec<zgui_platform::MonitorInfo>, zgui_reactive::LocalStorage>,
 }
 
 impl Windows {
@@ -61,6 +63,7 @@ impl Windows {
             commands,
             registry: RwSignal::new_local(Vec::new()),
             capabilities: Rc::new(RefCell::new(PlatformCapabilities::default())),
+            monitors: RwSignal::new_local(Vec::new()),
         }
     }
 
@@ -120,6 +123,18 @@ impl Windows {
     /// Reading this in a view is what makes a window list that keeps itself up to date.
     pub fn watch(&self) -> Signal<Vec<WindowHandle>, zgui_reactive::LocalStorage> {
         self.registry.into()
+    }
+
+    /// The outputs of this desktop, kept up to date as they come and go.
+    pub fn monitors(&self) -> Signal<Vec<zgui_platform::MonitorInfo>, zgui_reactive::LocalStorage> {
+        self.monitors.into()
+    }
+
+    /// Records the outputs the platform reports, when they differ from the last it did.
+    pub(crate) fn set_monitors(&self, monitors: Vec<zgui_platform::MonitorInfo>) {
+        if self.monitors.with_untracked(|held| *held != monitors) {
+            self.monitors.set(monitors);
+        }
     }
 
     /// What this desktop can do.

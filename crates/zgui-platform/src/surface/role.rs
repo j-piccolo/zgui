@@ -150,6 +150,8 @@ pub struct LayerPlacement {
     /// The output to place it on, named as [`MonitorInfo::name`](crate::MonitorInfo::name)
     /// reports it. Absent lets the desktop choose.
     pub monitor: Option<String>,
+    /// What the desktop knows the surface as, which its rules match on. Absent is "zgui".
+    pub namespace: Option<String>,
 }
 
 /// Which layer of the desktop a shell surface belongs to.
