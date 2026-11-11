@@ -348,6 +348,21 @@ impl App {
         self
     }
 
+    /// What the launch window is to the desktop: a shell layer rather than an ordinary window.
+    pub fn with_role(mut self, role: zgui_platform::SurfaceRole) -> Self {
+        self.inner.attributes_mut().role = role;
+        self
+    }
+
+    /// Launches with no window at all, and stays up until it is told to quit.
+    ///
+    /// The view given to [`App::run`] is then never built. Windows are opened from
+    /// [`App::with_context`] or from whatever it starts.
+    pub fn with_no_window(mut self) -> Self {
+        self.inner = self.inner.with_no_window();
+        self
+    }
+
     /// Decides when the application stops.
     ///
     /// The default stops it when the last window closes. See

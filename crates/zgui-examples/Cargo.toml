@@ -114,3 +114,7 @@ required-features = ["drm"]
 
 [lints]
 workspace = true
+
+[[example]]
+name = "layer"
+path = "../../examples/layer.rs"
