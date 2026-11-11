@@ -149,7 +149,7 @@ impl WaylandState {
             &self.qh,
             wl,
             layer::layer(placement.layer),
-            Some("zgui"),
+            Some(placement.namespace.as_deref().unwrap_or("zgui")),
             output.as_ref(),
         );
         layer::apply(&surface, placement);
@@ -166,6 +166,7 @@ impl WaylandState {
             ping: self.live.waker.ping(),
             seat: std::sync::Arc::clone(&self.link),
             shell: std::sync::Arc::clone(&self.xdg),
+            effects: self.extras.background_effect.clone(),
             waker: std::sync::Arc::clone(&self.live.waker)
                 as std::sync::Arc<dyn zgui_platform::Waker>,
         }

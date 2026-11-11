@@ -261,6 +261,10 @@ impl WaylandState {
             .collect();
         let sharpest = output::mode::sharpest(infos.iter());
         *self.live.monitors.borrow_mut() = infos.iter().map(output::describe).collect();
+        zgui_platform::Waker::wake(
+            self.live.waker.as_ref(),
+            zgui_platform::WakeReason::MonitorsChanged,
+        );
         let ids: Vec<_> = self
             .live
             .surfaces

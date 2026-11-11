@@ -17,6 +17,9 @@ use crate::surface::SurfaceId;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum WakeReason {
+    /// An output came, went or changed; [`PlatformCx::monitors`](crate::PlatformCx::monitors)
+    /// has the new list.
+    MonitorsChanged,
     /// Background work made progress and the surfaces it belongs to may need redrawing.
     ///
     /// The surfaces are named because an image finishing its decode for one window is not a reason

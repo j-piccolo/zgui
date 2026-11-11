@@ -2,6 +2,7 @@
 
 pub mod a11y;
 pub mod chrome;
+pub mod effect;
 pub mod fractional;
 mod handles;
 pub mod role;
@@ -58,6 +59,8 @@ pub struct Links {
     pub waker: Arc<dyn zgui_platform::Waker>,
     /// The shell a pop-up's later requests are made against.
     pub shell: Arc<crate::surface::role::xdg::XdgShell>,
+    /// Where a surface asks for blur behind it, when the compositor has that.
+    pub effects: Option<wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1>,
 }
 
 impl core::fmt::Debug for Links {
@@ -83,6 +86,8 @@ pub struct WaylandSurface {
     role: Role,
     /// Fractional scaling, when the compositor offers it.
     fractional: Fractional,
+    /// Blur behind it, when asked for.
+    effect: effect::Effect,
     /// Everything about it that changes.
     shared: Mutex<Shared>,
     /// A redraw asked for from anywhere, waiting to be pulled into the pacer.
@@ -134,6 +139,7 @@ impl WaylandSurface {
             id,
             role,
             fractional,
+            effect: effect::Effect::new(links.effects),
             shared: Mutex::new(Shared::new()),
             asked: AtomicBool::new(false),
             mapped: AtomicBool::new(false),
@@ -271,6 +277,29 @@ impl WaylandSurface {
         self.compositor.create_region(&self.qh, ())
     }
 
+    /// A region of `rects`, in the surface's own logical pixels.
+    pub(crate) fn region_of(&self, rects: &[zgui_geom::Rect<CssPx, Css>]) -> WlRegion {
+        let region = self.empty_region();
+        for rect in rects {
+            let left = rect.origin.x.0.floor() as i32;
+            let top = rect.origin.y.0.floor() as i32;
+            let right = (rect.origin.x.0 + rect.size.width.0).ceil() as i32;
+            let bottom = (rect.origin.y.0 + rect.size.height.0).ceil() as i32;
+            if right > left && bottom > top {
+                region.add(left, top, right - left, bottom - top);
+            }
+        }
+        region
+    }
+
+    /// This surface's background effect, where the compositor has one to give.
+    pub(crate) fn effect(
+        &self,
+    ) -> Option<&wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1>
+    {
+        self.effect.object(&self.qh, self.wl_surface())
+    }
+
     /// Asks the compositor to report when the frame about to be committed reaches the screen.
     pub(crate) fn ask_for_feedback(&self) {
         self.presentation.ask(&self.qh, self.wl_surface(), self.id);
@@ -347,6 +376,7 @@ impl Drop for WaylandSurface {
         // against a surface that has gone is answered against nothing.
         self.a11y.close();
         self.fractional.release();
+        self.effect.release();
     }
 }
 
@@ -508,6 +538,27 @@ impl Surface for WaylandSurface {
 
     fn set_pointer_passthrough(&self, passthrough: bool) -> Result<(), Unsupported> {
         chrome::set_pointer_passthrough(self, passthrough)
+    }
+
+    fn set_input_region(
+        &self,
+        rects: Option<&[zgui_geom::Rect<CssPx, Css>]>,
+    ) -> Result<(), Unsupported> {
+        chrome::set_input_region(self, rects)
+    }
+
+    fn set_blur_region(
+        &self,
+        rects: Option<&[zgui_geom::Rect<CssPx, Css>]>,
+    ) -> Result<(), Unsupported> {
+        chrome::set_blur_region(self, rects)
+    }
+
+    fn set_layer_placement(
+        &self,
+        placement: &zgui_platform::LayerPlacement,
+    ) -> Result<(), Unsupported> {
+        chrome::set_layer_placement(self, placement)
     }
 
     fn begin_move_drag(&self) -> Result<(), Unsupported> {

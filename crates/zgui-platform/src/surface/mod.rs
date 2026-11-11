@@ -29,7 +29,7 @@ pub use crate::surface::timing::{ComposeAhead, PresentPacing, PresentationTiming
 pub use crate::surface::watchdog::Watchdog;
 
 use accesskit::TreeUpdate;
-use zgui_geom::{Css, CssPx, Device, DevicePx, Point, Size};
+use zgui_geom::{Css, CssPx, Device, DevicePx, Point, Rect, Size};
 
 use crate::error::Unsupported;
 use crate::theme::ColorScheme;
@@ -263,6 +263,30 @@ pub trait Surface: Send + Sync + 'static {
     /// Makes the surface transparent to the pointer, so presses reach whatever is behind it.
     fn set_pointer_passthrough(&self, passthrough: bool) -> Result<(), Unsupported> {
         let _ = passthrough;
+        Err(Unsupported)
+    }
+
+    /// Limits where the surface takes the pointer to `rects`, in its own CSS pixels.
+    ///
+    /// `None` gives the whole surface back. An empty slice takes nothing at all.
+    fn set_input_region(&self, rects: Option<&[Rect<CssPx, Css>]>) -> Result<(), Unsupported> {
+        let _ = rects;
+        Err(Unsupported)
+    }
+
+    /// Asks the desktop to blur what is behind `rects` of the surface, in its own CSS pixels.
+    ///
+    /// `None` takes the blur off. The request rides the surface's next frame.
+    fn set_blur_region(&self, rects: Option<&[Rect<CssPx, Css>]>) -> Result<(), Unsupported> {
+        let _ = rects;
+        Err(Unsupported)
+    }
+
+    /// Moves a shell layer: its edges, margins, reserved room and keyboard, after it was made.
+    ///
+    /// The output and the namespace are fixed at creation and are not read here.
+    fn set_layer_placement(&self, placement: &LayerPlacement) -> Result<(), Unsupported> {
+        let _ = placement;
         Err(Unsupported)
     }
 

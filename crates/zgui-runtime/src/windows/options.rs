@@ -160,6 +160,14 @@ impl WindowOptions {
     pub fn attributes(&self) -> &SurfaceAttributes {
         &self.attributes
     }
+
+    /// What the surface is to the desktop: a shell layer or a pop-up rather than a window.
+    ///
+    /// A desktop that cannot make the role refuses the window rather than opening an ordinary one.
+    pub fn with_role(mut self, role: zgui_platform::SurfaceRole) -> Self {
+        self.attributes.role = role;
+        self
+    }
 }
 
 impl core::fmt::Debug for WindowOptions {

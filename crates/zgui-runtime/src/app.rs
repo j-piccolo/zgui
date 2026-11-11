@@ -1115,6 +1115,11 @@ impl AppHandler for Runtime {
         self.commands.set_platform(cx.waker());
         self.clipboards.set_platform(cx.waker());
         *self.windows_api.capabilities_slot().borrow_mut() = cx.capabilities().clone();
+        {
+            let monitors = cx.monitors();
+            let windows = self.windows_api.clone();
+            self.scope.with(|| windows.set_monitors(monitors));
+        }
 
         // Every window the application wants and has no surface for. At launch that is the window
         // it launched with; after a suspend it is all of them, which is why a specification is kept
@@ -1302,6 +1307,11 @@ impl AppHandler for Runtime {
                 self.clipboards.resolve(serial, result);
             }
             WakeReason::App(event) => self.app_event(cx, event),
+            WakeReason::MonitorsChanged => {
+                let monitors = cx.monitors();
+                let windows = self.windows_api.clone();
+                self.scope.with(|| windows.set_monitors(monitors));
+            }
             // A resize is where the state is read, and the last resize came before the change
             // was done.
             WakeReason::SurfaceStateChanged(surface) => {

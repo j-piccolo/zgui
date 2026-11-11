@@ -358,6 +358,36 @@ impl WindowHandle {
         self.act(|surface| surface.set_visible(visible));
     }
 
+    /// Limits where the window takes the pointer to `rects`, in its own CSS pixels.
+    ///
+    /// `None` gives the whole window back, and an empty slice lets every press through.
+    pub fn set_input_region(&self, rects: Option<&[zgui_geom::Rect<CssPx, Css>]>) {
+        self.act(|surface| {
+            let _ = surface.set_input_region(rects);
+        });
+    }
+
+    /// Asks the desktop to blur what is behind `rects` of the window, or `None` for no blur.
+    ///
+    /// Does nothing on a desktop that cannot.
+    pub fn set_blur_region(&self, rects: Option<&[zgui_geom::Rect<CssPx, Css>]>) {
+        self.act(|surface| {
+            let _ = surface.set_blur_region(rects);
+        });
+    }
+
+    /// Moves a shell layer: its edges, margins, reserved room and keyboard.
+    pub fn set_layer_placement(&self, placement: &zgui_platform::LayerPlacement) {
+        self.act(|surface| {
+            let _ = surface.set_layer_placement(placement);
+        });
+    }
+
+    /// The platform's number for the window's surface, once it has one.
+    pub fn surface_id(&self) -> Option<zgui_platform::SurfaceId> {
+        self.surface().map(|surface| surface.id())
+    }
+
     /// Sets the picture the desktop shows for this window.
     ///
     /// Does nothing where the desktop takes the icon from elsewhere — from the desktop entry on
