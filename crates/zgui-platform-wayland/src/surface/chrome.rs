@@ -118,6 +118,9 @@ pub fn set_visible(surface: &WaylandSurface, visible: bool) {
     shared.visibility.configured = false;
     shared.unmapped = true;
     shared.cancel_callbacks();
+    // A frame held for the old mapping attached to the unmapped surface is a protocol error, and
+    // the compositor closes the connection.
+    shared.pacer.unmapped();
 }
 
 /// Makes the surface transparent to the pointer, or takes it back.
