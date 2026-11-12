@@ -63,8 +63,11 @@ impl WaylandState {
             crate::frame::Ahead::new(crate::frame::ahead::mode(attributes.compose_ahead));
         apply(&surface, attributes);
         // The commit that asks to be configured. Nothing is attached to it, which is what makes it
-        // the initial commit rather than a frame.
-        surface.role().commit();
+        // the initial commit rather than a frame. A lock surface is configured without one, and
+        // any commit before it acknowledges that configure is a protocol error.
+        if !matches!(surface.role(), Role::Lock(_)) {
+            surface.role().commit();
+        }
         self.live.surfaces.borrow_mut().push(Arc::clone(&surface));
         Ok(surface)
     }
