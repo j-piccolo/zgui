@@ -84,6 +84,10 @@ impl Renderer for Recording {
         real_damage() && self.renderer.composed_survives_configure()
     }
 
+    fn owes_whole_surface(&self) -> bool {
+        self.renderer.owes_whole_surface()
+    }
+
     // Only with the real damage set: a scroll answered by a pixel move draws the exposed band and
     // nothing else, which a full redraw would hide.
     fn shifts_composed_pixels(&self) -> bool {
