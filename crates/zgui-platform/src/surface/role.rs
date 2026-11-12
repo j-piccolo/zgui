@@ -20,8 +20,42 @@ pub enum SurfaceRole {
     Toplevel,
     /// A surface placed against a rectangle of another surface, and dismissed with it.
     Popup(PopupPlacement),
-    /// A part of the desktop shell: a wallpaper, a dock, a notification, a lock screen.
+    /// A part of the desktop shell: a wallpaper, a dock, a notification.
     Layer(LayerPlacement),
+    /// What covers an output while the session is locked.
+    ///
+    /// Only made while [`PlatformCx::lock_session`](crate::PlatformCx::lock_session) has a lock
+    /// requested or held; the compositor shows nothing else on that output until the lock ends.
+    Lock(LockPlacement),
+}
+
+/// Which output a lock surface covers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LockPlacement {
+    /// The output, named as [`MonitorInfo::name`](crate::MonitorInfo::name) reports it. Absent
+    /// takes the first the compositor advertised, because a lock surface must name one.
+    pub monitor: Option<String>,
+}
+
+/// Where the session lock is.
+///
+/// The order a lock moves through: asked for, then held or refused, then given back. A lock the
+/// compositor ends by itself is [`LockState::Finished`] whether or not it was ever held, and an
+/// application tells the two apart by whether it saw [`LockState::Locked`] first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum LockState {
+    /// No lock has been asked for.
+    #[default]
+    Idle,
+    /// Asked for; the compositor has not answered yet.
+    Requested,
+    /// Held: every output shows only lock surfaces.
+    Locked,
+    /// Given back by the application; the session is unlocked.
+    Unlocked,
+    /// Ended by the compositor: refused, or taken away.
+    Finished,
 }
 
 /// Where a pop-up sits relative to the surface that owns it.

@@ -162,6 +162,10 @@ pub(crate) enum WindowCommand {
     Close(WindowToken),
     /// Stop the application.
     Quit,
+    /// Ask the compositor to lock the session.
+    LockSession,
+    /// Give the session lock back.
+    UnlockSession,
 }
 
 /// Where a window is in its life.
@@ -245,6 +249,24 @@ impl WindowCommands {
     /// Asks for the application to stop.
     pub fn quit(&self) {
         self.inner.borrow_mut().queue.push_back(WindowCommand::Quit);
+        self.ping();
+    }
+
+    /// Asks for the session to be locked, before any window queued after this opens.
+    pub fn lock_session(&self) {
+        self.inner
+            .borrow_mut()
+            .queue
+            .push_back(WindowCommand::LockSession);
+        self.ping();
+    }
+
+    /// Asks for the session lock to be given back.
+    pub fn unlock_session(&self) {
+        self.inner
+            .borrow_mut()
+            .queue
+            .push_back(WindowCommand::UnlockSession);
         self.ping();
     }
 

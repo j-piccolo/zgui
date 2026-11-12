@@ -296,7 +296,7 @@ impl WaylandSurface {
     pub(crate) fn effect(
         &self,
     ) -> Option<&wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1>
-    {
+{
         self.effect.object(&self.qh, self.wl_surface())
     }
 

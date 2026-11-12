@@ -70,6 +70,31 @@ pub trait PlatformCx {
     /// What this platform can and cannot do.
     fn capabilities(&self) -> &PlatformCapabilities;
 
+    /// Asks the compositor to lock the session.
+    ///
+    /// The answer arrives as [`WakeReason::SessionLockChanged`](crate::WakeReason): the lock is
+    /// held once [`PlatformCx::lock_state`] says [`LockState::Locked`](crate::LockState), and
+    /// surfaces in [`SurfaceRole::Lock`](crate::SurfaceRole) may be made from the moment this
+    /// returns. Asking again while a lock is requested or held does nothing.
+    ///
+    /// Defaulted to unsupported, because only a compositor with a lock protocol can do it.
+    ///
+    /// # Errors
+    ///
+    /// [`PlatformError::Unsupported`] where there is no lock protocol.
+    fn lock_session(&self) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported(crate::Unsupported))
+    }
+
+    /// Gives the lock back. The session is unlocked once this returns, and the application may
+    /// then exit; exiting while the lock is held leaves the session locked, which is the point.
+    fn unlock_session(&self) {}
+
+    /// Where the session lock is.
+    fn lock_state(&self) -> crate::LockState {
+        crate::LockState::Idle
+    }
+
     /// What a scroll from this desktop's devices means.
     ///
     /// Defaulted rather than required, because a backend that has not been taught the difference
