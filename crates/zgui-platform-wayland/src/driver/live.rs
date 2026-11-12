@@ -51,6 +51,12 @@ pub struct Live {
     pub(crate) clock: Arc<SystemClock>,
     /// How another thread reaches this loop.
     pub(crate) waker: Arc<PingWaker>,
+    /// The session lock, from the request until it is given back or ended. Kept for as long
+    /// as it is held: dropping it destroys it, which on a held lock the compositor answers by
+    /// keeping the session locked and disconnecting us.
+    pub(crate) lock: RefCell<Option<smithay_client_toolkit::session_lock::SessionLock>>,
+    /// Where the session lock is.
+    pub(crate) lock_state: Cell<zgui_platform::LockState>,
 }
 
 impl Live {
@@ -67,6 +73,18 @@ impl Live {
             capabilities,
             clock: Arc::new(SystemClock::new()),
             waker,
+            lock: RefCell::new(None),
+            lock_state: Cell::new(zgui_platform::LockState::Idle),
+        }
+    }
+
+    /// Records where the session lock is and tells the application, when it moved.
+    pub(crate) fn set_lock_state(&self, state: zgui_platform::LockState) {
+        if self.lock_state.replace(state) != state {
+            zgui_platform::Waker::wake(
+                self.waker.as_ref(),
+                zgui_platform::WakeReason::SessionLockChanged,
+            );
         }
     }
 

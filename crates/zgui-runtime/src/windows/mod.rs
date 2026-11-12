@@ -54,6 +54,8 @@ pub struct Windows {
     capabilities: Rc<RefCell<PlatformCapabilities>>,
     /// The outputs the platform last reported.
     monitors: RwSignal<Vec<zgui_platform::MonitorInfo>, zgui_reactive::LocalStorage>,
+    /// Where the session lock is, as the platform last reported it.
+    lock_state: RwSignal<zgui_platform::LockState, zgui_reactive::LocalStorage>,
 }
 
 impl Windows {
@@ -64,6 +66,7 @@ impl Windows {
             registry: RwSignal::new_local(Vec::new()),
             capabilities: Rc::new(RefCell::new(PlatformCapabilities::default())),
             monitors: RwSignal::new_local(Vec::new()),
+            lock_state: RwSignal::new_local(zgui_platform::LockState::Idle),
         }
     }
 
@@ -128,6 +131,34 @@ impl Windows {
     /// The outputs of this desktop, kept up to date as they come and go.
     pub fn monitors(&self) -> Signal<Vec<zgui_platform::MonitorInfo>, zgui_reactive::LocalStorage> {
         self.monitors.into()
+    }
+
+    /// Asks the compositor to lock the session.
+    ///
+    /// Windows opened with [`SurfaceRole::Lock`](zgui_platform::SurfaceRole) after this call are
+    /// the lock's surfaces, one per output. [`Windows::lock_state`] says when the lock is held,
+    /// refused or taken away.
+    pub fn lock_session(&self) {
+        self.commands.lock_session();
+    }
+
+    /// Gives the session lock back. Once [`Windows::lock_state`] says
+    /// [`LockState::Unlocked`](zgui_platform::LockState) the session is unlocked and the
+    /// application may exit.
+    pub fn unlock_session(&self) {
+        self.commands.unlock_session();
+    }
+
+    /// Where the session lock is.
+    pub fn lock_state(&self) -> Signal<zgui_platform::LockState, zgui_reactive::LocalStorage> {
+        self.lock_state.into()
+    }
+
+    /// Records where the session lock is, when it moved.
+    pub(crate) fn set_lock_state(&self, state: zgui_platform::LockState) {
+        if self.lock_state.get_untracked() != state {
+            self.lock_state.set(state);
+        }
     }
 
     /// Records the outputs the platform reports, when they differ from the last it did.

@@ -925,6 +925,15 @@ impl Runtime {
                     closed_any = true;
                 }
                 WindowCommand::Quit => cx.request_exit(),
+                WindowCommand::LockSession => {
+                    if let Err(error) = cx.lock_session() {
+                        tracing::warn!(%error, "the session could not be locked");
+                        let windows = self.windows_api.clone();
+                        self.scope
+                            .with(|| windows.set_lock_state(zgui_platform::LockState::Finished));
+                    }
+                }
+                WindowCommand::UnlockSession => cx.unlock_session(),
             }
         }
         if closed_any {
@@ -1337,6 +1346,11 @@ impl AppHandler for Runtime {
                 self.clipboards.resolve(serial, result);
             }
             WakeReason::App(event) => self.app_event(cx, event),
+            WakeReason::SessionLockChanged => {
+                let state = cx.lock_state();
+                let windows = self.windows_api.clone();
+                self.scope.with(|| windows.set_lock_state(state));
+            }
             WakeReason::MonitorsChanged => {
                 let monitors = cx.monitors();
                 let windows = self.windows_api.clone();

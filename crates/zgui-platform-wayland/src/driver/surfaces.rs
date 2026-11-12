@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use zgui_geom::{Css, CssPx, Size};
 use zgui_platform::{
-    LayerPlacement, PlatformError, PopupPlacement, SurfaceAttributes, SurfaceId, SurfaceRole,
-    Unsupported,
+    LayerPlacement, LockPlacement, PlatformError, PopupPlacement, SurfaceAttributes, SurfaceId,
+    SurfaceRole, Unsupported,
 };
 
 use crate::driver::WaylandState;
@@ -78,6 +78,7 @@ impl WaylandState {
     ) -> Result<Role, PlatformError> {
         match &attributes.role {
             SurfaceRole::Layer(placement) => self.make_layer(wl, placement),
+            SurfaceRole::Lock(placement) => self.make_lock(wl, placement),
             SurfaceRole::Popup(placement) => self.make_popup(id, wl, placement, attributes),
             _ => Ok(Role::Toplevel(Box::new(Toplevel::new(
                 &self.xdg,
@@ -154,6 +155,39 @@ impl WaylandState {
         );
         layer::apply(&surface, placement);
         Ok(Role::Layer(Box::new(surface)))
+    }
+
+    /// A surface covering one output while the session is locked.
+    ///
+    /// The lock has to have been asked for first: a lock surface belongs to a lock, and one made
+    /// without a lock has nothing to belong to.
+    fn make_lock(
+        &self,
+        wl: wayland_client::protocol::wl_surface::WlSurface,
+        placement: &LockPlacement,
+    ) -> Result<Role, PlatformError> {
+        let lock = self.live.lock.borrow();
+        let Some(lock) = lock.as_ref() else {
+            return Err(PlatformError::SurfaceCreation(
+                "a lock surface needs the session lock asked for first".to_owned(),
+            ));
+        };
+        let named = placement.monitor.as_ref().and_then(|name| {
+            self.outputs.outputs().find(|output| {
+                self.outputs
+                    .info(output)
+                    .and_then(|info| info.name)
+                    .is_some_and(|found| &found == name)
+            })
+        });
+        // A lock surface must name an output; an unnamed one takes the first.
+        let Some(output) = named.or_else(|| self.outputs.outputs().next()) else {
+            return Err(PlatformError::SurfaceCreation(
+                "there is no output to cover".to_owned(),
+            ));
+        };
+        let surface = lock.create_lock_surface(wl, &output, &self.qh);
+        Ok(Role::Lock(Box::new(surface)))
     }
 
     /// What every surface this loop makes is wired into.

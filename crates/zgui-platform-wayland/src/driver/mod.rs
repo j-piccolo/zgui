@@ -25,6 +25,7 @@ use smithay_client_toolkit::reexports::client::globals::GlobalList;
 use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
 use smithay_client_toolkit::registry::RegistryState;
 use smithay_client_toolkit::seat::SeatState;
+use smithay_client_toolkit::session_lock::SessionLockState;
 use smithay_client_toolkit::shell::wlr_layer::LayerShell;
 use smithay_client_toolkit::shm::Shm;
 use zgui_platform::{PlatformError, SurfaceEvent, SurfaceId};
@@ -70,6 +71,8 @@ pub struct WaylandState {
     pub(crate) xdg: Arc<crate::surface::role::xdg::XdgShell>,
     /// The shell layer, where the compositor offers one.
     pub(crate) layers: Option<LayerShell>,
+    /// `ext_session_lock_manager_v1`, where the compositor offers it.
+    pub(crate) session_lock: SessionLockState,
     /// The seats, and everything attached to them.
     pub(crate) seats: SeatState,
     /// The one seat this backend tracks, and what it is pointed at.
@@ -167,6 +170,7 @@ impl WaylandState {
             compositor,
             xdg,
             layers,
+            session_lock: SessionLockState::new(globals, &qh),
             seats: SeatState::new(globals, &qh),
             seat: Seat::new(),
             link: Arc::default(),

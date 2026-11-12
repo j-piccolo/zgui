@@ -14,16 +14,19 @@ use smithay_client_toolkit::reexports::client::protocol::wl_surface::WlSurface;
 use smithay_client_toolkit::reexports::client::{Connection, Dispatch, Proxy, QueueHandle};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::SeatState;
+use smithay_client_toolkit::session_lock::{
+    SessionLock, SessionLockHandler, SessionLockSurface, SessionLockSurfaceConfigure,
+};
 use smithay_client_toolkit::shell::WaylandSurface as _;
 use smithay_client_toolkit::shell::wlr_layer::{
     LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
 use smithay_client_toolkit::{
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
-    delegate_shm, registry_handlers,
+    delegate_session_lock, delegate_shm, registry_handlers,
 };
 use zgui_geom::{CssPx, Size};
-use zgui_platform::{Surface as _, SurfaceEvent};
+use zgui_platform::{LockState, Surface as _, SurfaceEvent};
 
 use crate::driver::WaylandState;
 use crate::output;
@@ -158,10 +161,43 @@ impl LayerShellHandler for WaylandState {
         let Some(id) = self.identify(layer.wl_surface()) else {
             return;
         };
+        self.configured(id, configure.new_size);
+    }
+}
+
+impl SessionLockHandler for WaylandState {
+    fn locked(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _lock: SessionLock) {
+        self.live.set_lock_state(LockState::Locked);
+    }
+
+    fn finished(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _lock: SessionLock) {
+        // Refused, or taken away. The lock object is spent either way; destroying it now is
+        // what the protocol asks for, and nothing remains locked by it.
+        self.live.lock.borrow_mut().take();
+        self.live.set_lock_state(LockState::Finished);
+    }
+
+    fn configure(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        surface: SessionLockSurface,
+        configure: SessionLockSurfaceConfigure,
+        _serial: u32,
+    ) {
+        let Some(id) = self.identify(surface.wl_surface()) else {
+            return;
+        };
+        self.configured(id, configure.new_size);
+    }
+}
+
+impl WaylandState {
+    /// A shell surface was given its extent: zero on an axis keeps the extent it asked for.
+    fn configured(&mut self, id: zgui_platform::SurfaceId, (width, height): (u32, u32)) {
         let Some(surface) = self.live.surface(id) else {
             return;
         };
-        let (width, height) = configure.new_size;
         let (resized, visibility) = {
             let mut shared = surface.shared();
             let wanted = surface.wanted();
@@ -316,3 +352,4 @@ delegate_seat!(WaylandState);
 delegate_shm!(WaylandState);
 delegate_registry!(WaylandState);
 delegate_layer!(WaylandState);
+delegate_session_lock!(WaylandState);

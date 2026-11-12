@@ -20,6 +20,9 @@ pub enum WakeReason {
     /// An output came, went or changed; [`PlatformCx::monitors`](crate::PlatformCx::monitors)
     /// has the new list.
     MonitorsChanged,
+    /// The session lock moved on; [`PlatformCx::lock_state`](crate::PlatformCx::lock_state) says
+    /// where it is now.
+    SessionLockChanged,
     /// Background work made progress and the surfaces it belongs to may need redrawing.
     ///
     /// The surfaces are named because an image finishing its decode for one window is not a reason

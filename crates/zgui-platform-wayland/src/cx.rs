@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use zgui_platform::{
-    Clipboard, Clock, ColorScheme, MonitorInfo, PlatformCapabilities, PlatformCx, PlatformError,
-    Surface, SurfaceAttributes, SurfaceId, Waker,
+    Clipboard, Clock, ColorScheme, LockState, MonitorInfo, PlatformCapabilities, PlatformCx,
+    PlatformError, Surface, SurfaceAttributes, SurfaceId, Waker,
 };
 
 use crate::driver::WaylandState;
@@ -88,6 +88,45 @@ impl PlatformCx for WaylandCx<'_> {
 
     fn capabilities(&self) -> &PlatformCapabilities {
         &self.state.live.capabilities
+    }
+
+    fn lock_session(&self) -> Result<(), PlatformError> {
+        let live = &self.state.live;
+        if matches!(
+            live.lock_state.get(),
+            LockState::Requested | LockState::Locked
+        ) {
+            return Ok(());
+        }
+        let lock = self
+            .state
+            .session_lock
+            .lock(&self.state.qh)
+            .map_err(|error| {
+                PlatformError::Backend(format!("ext_session_lock_manager_v1: {error}"))
+            })?;
+        *live.lock.borrow_mut() = Some(lock);
+        live.set_lock_state(LockState::Requested);
+        Ok(())
+    }
+
+    fn unlock_session(&self) {
+        let live = &self.state.live;
+        let Some(lock) = live.lock.borrow_mut().take() else {
+            return;
+        };
+        // A held lock is given back with unlock_and_destroy; one not yet held is simply
+        // destroyed, which is what dropping it does.
+        lock.unlock();
+        drop(lock);
+        // Sent now, so the session is unlocked by the time an application that exits next
+        // has gone.
+        let _ = self.state.conn.flush();
+        live.set_lock_state(LockState::Unlocked);
+    }
+
+    fn lock_state(&self) -> LockState {
+        self.state.live.lock_state.get()
     }
 
     fn clock(&self) -> Arc<dyn Clock> {
