@@ -2,15 +2,18 @@
 //!
 //! Run it under a wlroots-style compositor with `cargo run -p zgui-examples --example layer`.
 
+use zgui::geom::{CssPx, Edges, Point, Rect, Size};
 use zgui::platform::{KeyboardInteractivity, Layer, LayerPlacement, SurfaceRole};
 use zgui::prelude::*;
 use zgui::reactive::RenderEffect;
-use zgui::geom::{CssPx, Edges, Point, Rect, Size};
 
 const WIDTH: f32 = 48.0;
 
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect<CssPx, zgui::geom::Css> {
-    Rect::new(Point::new(CssPx(x), CssPx(y)), Size::new(CssPx(w), CssPx(h)))
+    Rect::new(
+        Point::new(CssPx(x), CssPx(y)),
+        Size::new(CssPx(w), CssPx(h)),
+    )
 }
 
 #[component]
@@ -77,7 +80,11 @@ fn main() -> Result<(), zgui::Error> {
                     let mut opened = opened.unwrap_or_default();
                     let monitors = windows.monitors().get();
                     opened.retain(|(name, handle)| {
-                        let keep = monitors.iter().any(|m| m.name.as_ref().is_some_and(|held| held.as_str() == name.as_str()));
+                        let keep = monitors.iter().any(|m| {
+                            m.name
+                                .as_ref()
+                                .is_some_and(|held| held.as_str() == name.as_str())
+                        });
                         if !keep {
                             handle.close();
                         }
