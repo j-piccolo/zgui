@@ -78,6 +78,19 @@ pub trait Renderer {
         false
     }
 
+    /// Whether the next [`Renderer::draw`] redraws the whole surface whatever damage it is handed.
+    ///
+    /// A renderer that keeps a composed picture can lose it for reasons the caller never sees: an
+    /// acquisition that came back outdated or lost, a device rebuilt after a loss. The next draw
+    /// then clears and redraws every pixel. The display list holds only what the caller's damage
+    /// reached, so a caller that built it for less gets a surface cleared and only that much of it
+    /// drawn back. Asked before each frame is built, and a true answer is drawn for in full.
+    ///
+    /// False by default, so a renderer that only ever draws the damage it is handed is correct.
+    fn owes_whole_surface(&self) -> bool {
+        false
+    }
+
     /// Moves the still-valid pixels of a composed region, before the next [`Renderer::draw`].
     ///
     /// Only ever called on a renderer that answered true to

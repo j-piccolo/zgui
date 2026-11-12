@@ -78,6 +78,12 @@ impl Renderer for WgpuRenderer {
         !self.full_damage_next
     }
 
+    /// Yes after anything that left the composed target unreliable: the draw below widens its
+    /// damage to everything then, and needs a display list built for everything.
+    fn owes_whole_surface(&self) -> bool {
+        self.full_damage_next
+    }
+
     fn shift_composed(&mut self, shift: zgui_render::ScrollShift) {
         // Recorded, not performed. The copy belongs in the frame's own encoder, ahead of the
         // passes that redraw what the move left undefined, and that encoder does not exist yet.
