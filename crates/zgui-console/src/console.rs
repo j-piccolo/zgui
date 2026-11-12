@@ -308,6 +308,10 @@ impl Renderer for DrmRenderer {
         self.inner.composed_survives_configure()
     }
 
+    fn owes_whole_surface(&self) -> bool {
+        self.inner.owes_whole_surface()
+    }
+
     fn shift_composed(&mut self, shift: ScrollShift) {
         self.inner.shift_composed(shift);
     }

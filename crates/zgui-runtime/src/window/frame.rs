@@ -335,6 +335,15 @@ impl Window {
         // from the surface this frame will actually present to.
         mark("f.reconfigure");
         self.reconfigure_surface();
+        // The renderer may have lost its composed picture since the last frame, with no configure
+        // to say so: an outdated or lost acquisition, a rebuilt device. It redraws every pixel
+        // next, and the walk emits only what the damage reaches, so the damage is everything too.
+        // Otherwise the surface is cleared and only this frame's few rectangles are drawn back.
+        if self.renderer.owes_whole_surface() {
+            self.damage = DamageSet::full();
+        }
+        mark("f.device");
+        self.reconfigure_surface();
         mark("f.device");
         self.device_epoch();
         // Frame callbacks before the animate stage and the flush, with the moment this frame is
