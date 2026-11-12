@@ -668,7 +668,7 @@ mod tests {
         shared.pacer.compose_ahead(true);
         shared.pacer.committed(now);
         assert_eq!(shared.end_of_redraw(now, now), EndOfRedraw::Waiting);
-        assert!(!shared.pacer.present_now(now));
+        assert!(!shared.pacer.present_now(shared.visibility, now));
         assert_eq!(shared.end_of_redraw(now, now), EndOfRedraw::Held);
     }
 
@@ -687,9 +687,10 @@ mod tests {
     #[test]
     fn a_new_extent_drops_the_held_frame() {
         let mut shared = Shared::new();
+        shared.visibility.configured = true;
         shared.resized(logical(800.0, 600.0), 1.0);
         shared.pacer.committed(Instant::now());
-        assert!(!shared.pacer.present_now(Instant::now()));
+        assert!(!shared.pacer.present_now(shared.visibility, Instant::now()));
         shared.resized(logical(900.0, 600.0), 1.0);
         assert!(!shared.pacer.held());
     }

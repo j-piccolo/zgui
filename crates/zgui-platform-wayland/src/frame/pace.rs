@@ -135,7 +135,15 @@ impl Pacer {
     /// Not while a callback is owed: two commits with no callback between them is a client racing
     /// ahead of the display, and only the second of them is ever shown. The frame is held instead,
     /// and [`Pacer::take_present`] hands it over when the callback arrives or is given up on.
-    pub fn present_now(&mut self, now: Instant) -> bool {
+    ///
+    /// A surface that is not configured cannot take a buffer. Its frame is dropped, and a redraw
+    /// is kept for the configure to deliver.
+    pub fn present_now(&mut self, visibility: Visibility, now: Instant) -> bool {
+        if !visibility.configured {
+            self.held = false;
+            self.wanted = true;
+            return false;
+        }
         let owed = matches!(self.owed, Owed::Callback(since) if !self.watchdog.expired(since, now));
         self.held = owed;
         !owed
@@ -147,6 +155,11 @@ impl Pacer {
     /// the frame after it is composed while the compositor answers for it.
     pub fn take_present(&mut self, visibility: &mut Visibility, now: Instant) -> bool {
         self.expire(visibility, now);
+        if self.held && !visibility.configured {
+            self.held = false;
+            self.wanted = true;
+            return false;
+        }
         if !self.held || matches!(self.owed, Owed::Callback(_)) {
             return false;
         }
@@ -156,6 +169,15 @@ impl Pacer {
 
     /// Drops the held frame, which a new extent or scale made obsolete.
     pub const fn cancel_held(&mut self) {
+        self.held = false;
+    }
+
+    /// Records the surface being unmapped.
+    ///
+    /// The held frame was composed for the old mapping, and the owed callback does not arrive.
+    /// Both are dropped, so the configure that maps the surface again delivers the next redraw.
+    pub const fn unmapped(&mut self) {
+        self.owed = Owed::Nothing;
         self.held = false;
     }
 
@@ -439,7 +461,10 @@ mod tests {
             pacer.take(&mut visibility, now),
             "the window composes ahead"
         );
-        assert!(!pacer.present_now(now), "two commits for one callback");
+        assert!(
+            !pacer.present_now(visibility, now),
+            "two commits for one callback"
+        );
         pacer.request();
         assert!(
             !pacer.take(&mut visibility, now),
@@ -473,7 +498,7 @@ mod tests {
         let now = Instant::now();
         let mut visibility = shown();
         pacer.committed(now);
-        assert!(!pacer.present_now(now));
+        assert!(!pacer.present_now(visibility, now));
         assert_eq!(
             pacer.deadline(visibility, now),
             Some(now + Duration::from_millis(400)),
@@ -485,13 +510,60 @@ mod tests {
     }
 
     #[test]
+    fn a_held_frame_is_never_presented_to_an_unmapped_surface() {
+        let mut pacer = Pacer::new();
+        pacer.watch(Watchdog::for_interval(Some(Duration::from_millis(100))));
+        pacer.compose_ahead(true);
+        let now = Instant::now();
+        let mut visibility = shown();
+        pacer.committed(now);
+        assert!(!pacer.present_now(visibility, now));
+
+        pacer.unmapped();
+        visibility.configured = false;
+        let later = now + Duration::from_millis(400);
+        assert!(
+            !pacer.take_present(&mut visibility, later),
+            "the held frame was presented to an unmapped surface"
+        );
+        assert!(
+            !pacer.take(&mut visibility, later),
+            "drawn before its configure"
+        );
+
+        // Shown again: the redraw it asks for waits for the configure, and for no callback.
+        pacer.request();
+        assert!(!pacer.take(&mut visibility, later));
+        visibility.configured = true;
+        assert!(
+            pacer.take(&mut visibility, later),
+            "the configure delivers the redraw"
+        );
+    }
+
+    #[test]
+    fn a_frame_composed_for_an_unconfigured_surface_is_dropped_and_redrawn() {
+        let mut pacer = Pacer::new();
+        let now = Instant::now();
+        let mut visibility = shown();
+        visibility.configured = false;
+        assert!(!pacer.present_now(visibility, now));
+        assert!(
+            !pacer.held(),
+            "a frame waits to be presented to an unconfigured surface"
+        );
+        visibility.configured = true;
+        assert!(pacer.take(&mut visibility, now));
+    }
+
+    #[test]
     fn a_new_extent_drops_the_held_frame_and_lets_the_next_one_be_composed() {
         let mut pacer = Pacer::new();
         pacer.compose_ahead(true);
         let now = Instant::now();
         let mut visibility = shown();
         pacer.committed(now);
-        assert!(!pacer.present_now(now));
+        assert!(!pacer.present_now(visibility, now));
         pacer.cancel_held();
         pacer.request();
         assert!(pacer.take(&mut visibility, now));

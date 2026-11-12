@@ -456,7 +456,9 @@ impl Surface for WaylandSurface {
     }
 
     fn present_now(&self) -> bool {
-        self.shared().pacer.present_now(Instant::now())
+        let mut shared = self.shared();
+        let visibility = shared.visibility;
+        shared.pacer.present_now(visibility, Instant::now())
     }
 
     fn redraw_declined(&self) {
