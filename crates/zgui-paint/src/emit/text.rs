@@ -1056,12 +1056,17 @@ fn outline_id(at: Where, index: u32) -> VectorId {
 /// it in the element's `color` is right far more often than drawing it in whatever was in slot zero.
 fn brush(scene: &Scene, slot: PaintSlot, fallback: Color) -> Color {
     match scene.text_paints.get(slot) {
-        Some(paint) => Color::srgb(
-            paint.color[0],
-            paint.color[1],
-            paint.color[2],
-            paint.color[3],
-        ),
+        // The table holds premultiplied colour and every sprite premultiplies what it is given,
+        // so the channels are divided back out here; otherwise translucent text is multiplied by
+        // its alpha twice and draws at alpha squared.
+        Some(paint) => {
+            let [red, green, blue, alpha] = paint.color;
+            if alpha <= 0.0 {
+                Color::srgb(0.0, 0.0, 0.0, 0.0)
+            } else {
+                Color::srgb(red / alpha, green / alpha, blue / alpha, alpha)
+            }
+        }
         None => fallback,
     }
 }
