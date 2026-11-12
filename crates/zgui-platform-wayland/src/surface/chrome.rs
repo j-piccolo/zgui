@@ -103,6 +103,17 @@ pub fn set_visible(surface: &WaylandSurface, visible: bool) {
     let wl = surface.wl_surface();
     wl.attach(None, 0, 0);
     wl.commit();
+    // An unmapped layer surface starts over: the compositor forgets its size, and the next commit
+    // is a first commit that must carry one, or a surface not stretched across both edges of an
+    // axis is a protocol error. The size goes out now, pending, so whatever commit maps it again
+    // (a placement, the next frame) has it.
+    if let Some(layer) = surface.role().layer() {
+        let extent = surface.shared().logical;
+        layer.set_size(
+            extent.width.0.round().max(1.0) as u32,
+            extent.height.0.round().max(1.0) as u32,
+        );
+    }
     let mut shared = surface.shared();
     shared.visibility.configured = false;
     shared.unmapped = true;
