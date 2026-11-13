@@ -198,7 +198,7 @@ impl WaylandState {
         let Some(surface) = self.live.surface(id) else {
             return;
         };
-        let (resized, visibility) = {
+        let (resized, visibility, kept) = {
             let mut shared = surface.shared();
             let wanted = surface.wanted();
             let extent = Size::new(
@@ -213,16 +213,26 @@ impl WaylandState {
                     CssPx(height as f32)
                 },
             );
-            shared.visibility.configured = true;
+            // A surface the application hid keeps the answer for when it is shown.
+            let kept = shared.unmapped;
+            if kept {
+                shared.configured_unmapped = true;
+            } else {
+                shared.visibility.configured = true;
+            }
             let scale = shared.ladder.factor();
-            (shared.resized(extent, scale), shared.visibility_edge())
+            (
+                shared.resized(extent, scale),
+                shared.visibility_edge(),
+                kept,
+            )
         };
         if let Some(event) = visibility {
             self.report(id, event);
         }
         if let Some(event) = resized {
             self.report(id, event);
-        } else {
+        } else if !kept {
             surface.request_redraw();
         }
     }

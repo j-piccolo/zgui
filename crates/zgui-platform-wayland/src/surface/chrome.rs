@@ -89,12 +89,27 @@ pub fn set_resizable(surface: &WaylandSurface, resizable: bool) {
 /// buffer, which unmaps it — and the compositor then treats the next buffer as a fresh mapping,
 /// configure sequence and all.
 ///
-/// An unmapped surface is shown again by the same empty commit that asked for its first configure.
-/// The pacer holds the redraw until that configure arrives.
+/// A hidden shell layer asks for its next configure immediately and keeps the answer. To show the
+/// layer is then one frame, with no round trip through the compositor before it.
+///
+/// Other unmapped surfaces ask for their configure when they are shown. The pacer holds the redraw
+/// until the configure arrives.
 pub fn set_visible(surface: &WaylandSurface, visible: bool) {
     if visible {
-        let unmapped = std::mem::take(&mut surface.shared().unmapped);
-        if unmapped {
+        let asked = {
+            let mut shared = surface.shared();
+            if !std::mem::take(&mut shared.unmapped) {
+                None
+            } else if std::mem::take(&mut shared.configured_unmapped) {
+                // The configure that answers the hide is already here.
+                shared.visibility.configured = true;
+                None
+            } else {
+                Some(std::mem::replace(&mut shared.asked_unmapped, false))
+            }
+        };
+        // A layer that already asked waits for the configure on its way.
+        if asked == Some(false) {
             surface.wl_surface().commit();
         }
         zgui_platform::Surface::request_redraw(surface);
@@ -105,18 +120,24 @@ pub fn set_visible(surface: &WaylandSurface, visible: bool) {
     wl.commit();
     // An unmapped layer surface starts over: the compositor forgets its size, and the next commit
     // is a first commit that must carry one, or a surface not stretched across both edges of an
-    // axis is a protocol error. The size goes out now, pending, so whatever commit maps it again
-    // (a placement, the next frame) has it.
-    if let Some(layer) = surface.role().layer() {
+    // axis is a protocol error. The commit goes out now, so the configure arrives before the
+    // surface is shown.
+    let asked = if let Some(layer) = surface.role().layer() {
         let extent = surface.shared().logical;
         layer.set_size(
             extent.width.0.round().max(1.0) as u32,
             extent.height.0.round().max(1.0) as u32,
         );
-    }
+        wl.commit();
+        true
+    } else {
+        false
+    };
     let mut shared = surface.shared();
     shared.visibility.configured = false;
     shared.unmapped = true;
+    shared.asked_unmapped = asked;
+    shared.configured_unmapped = false;
     shared.cancel_callbacks();
     // A frame held for the old mapping attached to the unmapped surface is a protocol error, and
     // the compositor closes the connection.
@@ -149,8 +170,7 @@ pub fn set_pointer_passthrough(
 
 /// Commits state set between frames, unless the surface is unmapped.
 ///
-/// A commit on an unmapped surface is the one that asks to be mapped again, so there the state
-/// waits for [`set_visible`] to make it.
+/// On an unmapped surface the state waits for the commit that maps it.
 fn commit_now(surface: &WaylandSurface) {
     if !surface.shared().unmapped {
         surface.wl_surface().commit();
