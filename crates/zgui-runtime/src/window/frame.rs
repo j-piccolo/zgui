@@ -646,6 +646,13 @@ impl Window {
 
         self.show_first_frame(outcome);
 
+        // A frame that damaged nothing put nothing on the surface. The platform closes it out as
+        // one that committed nothing: a bufferless commit makes the compositor answer, and wakes
+        // both processes, for a picture that did not change.
+        if outcome == FrameOutcome::Skipped(SkipReason::Undamaged) {
+            self.surface.redraw_declined();
+        }
+
         // Last, with everything this frame produced still standing: the scene it emitted, the
         // damage it answered, the layout it computed. The handle is cloned out first because the
         // probe is handed the window it is stored on.
