@@ -101,10 +101,12 @@ pub fn set_visible(surface: &WaylandSurface, visible: bool) {
             if !std::mem::take(&mut shared.unmapped) {
                 None
             } else if std::mem::take(&mut shared.configured_unmapped) {
+                shared.awaits_buffer = true;
                 // The configure that answers the hide is already here.
                 shared.visibility.configured = true;
                 None
             } else {
+                shared.awaits_buffer = true;
                 Some(std::mem::replace(&mut shared.asked_unmapped, false))
             }
         };
@@ -137,6 +139,7 @@ pub fn set_visible(surface: &WaylandSurface, visible: bool) {
     shared.visibility.configured = false;
     shared.unmapped = true;
     shared.asked_unmapped = asked;
+    shared.awaits_buffer = false;
     shared.configured_unmapped = false;
     shared.cancel_callbacks();
     // A frame held for the old mapping attached to the unmapped surface is a protocol error, and
@@ -168,11 +171,14 @@ pub fn set_pointer_passthrough(
     Ok(())
 }
 
-/// Commits state set between frames, unless the surface is unmapped.
+/// Commits state set between frames, unless the surface is unmapped or waits for its buffer.
 ///
-/// On an unmapped surface the state waits for the commit that maps it.
+/// There the state rides the commit that maps the surface. A commit ahead of that buffer makes
+/// the compositor start a frame the surface is absent from.
 fn commit_now(surface: &WaylandSurface) {
-    if !surface.shared().unmapped {
+    let shared = surface.shared();
+    if !shared.unmapped && !shared.awaits_buffer {
+        drop(shared);
         surface.wl_surface().commit();
     }
 }
@@ -241,6 +247,7 @@ pub fn pre_present(surface: &WaylandSurface, size: Size<i32, Device>, scale: f64
         let mut shared = surface.shared();
         shared.presented = true;
         shared.mapped = true;
+        shared.awaits_buffer = false;
         (
             shared.frame_metadata(size, scale),
             shared.ladder.is_fractional(),

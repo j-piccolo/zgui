@@ -88,6 +88,8 @@ pub(crate) struct Shared {
     /// The answer is kept until the surface is shown. A frame drawn at the configure would map a
     /// surface that the application hid.
     pub(crate) configured_unmapped: bool,
+    /// Whether a surface shown again has yet to commit the buffer that maps it.
+    pub(crate) awaits_buffer: bool,
     /// Whether the redraw now being delivered was refused without running.
     pub(crate) declined: bool,
     /// Whether any buffer has ever been committed.
@@ -143,6 +145,7 @@ impl Shared {
             unmapped: false,
             asked_unmapped: false,
             configured_unmapped: false,
+            awaits_buffer: false,
             declined: false,
             mapped: false,
             declared: None,
