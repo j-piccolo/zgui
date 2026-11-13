@@ -81,6 +81,13 @@ pub(crate) struct Shared {
     /// Whether the application unmapped the surface, so that showing it again starts a new
     /// configure sequence.
     pub(crate) unmapped: bool,
+    /// Whether an unmapped surface has already made the commit that asks for its configure.
+    pub(crate) asked_unmapped: bool,
+    /// Whether that configure arrived while the surface was still unmapped.
+    ///
+    /// The answer is kept until the surface is shown. A frame drawn at the configure would map a
+    /// surface that the application hid.
+    pub(crate) configured_unmapped: bool,
     /// Whether the redraw now being delivered was refused without running.
     pub(crate) declined: bool,
     /// Whether any buffer has ever been committed.
@@ -134,6 +141,8 @@ impl Shared {
             released: None,
             chained: None,
             unmapped: false,
+            asked_unmapped: false,
+            configured_unmapped: false,
             declined: false,
             mapped: false,
             declared: None,
