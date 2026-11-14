@@ -250,12 +250,29 @@ fn plan_rect(
     let mut depth = 0usize;
 
     builder.begin_pass(current, scissor);
-    // The rectangle is about to be redrawn, so what is in it goes first. It is a draw because a
-    // render pass clears its whole attachment or none of it, and clearing all of it would throw
-    // away every pixel this frame is relying on not having to redraw.
-    builder.draw(PlannedDraw::Clear);
+    // An opaque quad that covers the whole rectangle hides the clear and everything drawn before
+    // it, so the rectangle starts at that quad.
+    let cover = reach::cover(scene, batches, rect);
+    if cover.is_none() {
+        // The rectangle is about to be redrawn, so what is in it goes first. It is a draw because
+        // a render pass clears its whole attachment or none of it, and clearing all of it would
+        // throw away every pixel this frame is relying on not having to redraw.
+        builder.draw(PlannedDraw::Clear);
+    }
 
-    for Reached { batch, reach } in batches {
+    for (index, Reached { batch, reach }) in batches.iter().enumerate() {
+        let trimmed;
+        let batch = match cover {
+            Some((first, _)) if index < first => continue,
+            Some((first, at)) if index == first => match batch {
+                Batch::Quads(range) => {
+                    trimmed = Batch::Quads(range.start + at..range.end);
+                    &trimmed
+                }
+                other => other,
+            },
+            _ => batch,
+        };
         match *batch {
             Batch::Group(index) => {
                 let Some(boundary) = scene.primitives.groups.get(index) else {
