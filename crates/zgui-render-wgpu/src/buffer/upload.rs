@@ -164,6 +164,7 @@ impl UploadBelt {
 
         let chunk = self.active.last().expect("the selected chunk was retained");
         let slice = chunk.buffer.slice(offset..offset + size);
+        zgui_profile::latency::note_with("gpu.copy", || format!("site=upload bytes={size}"));
         encoder.copy_buffer_to_buffer(&chunk.buffer, offset, target, target_offset, size);
         slice.get_mapped_range_mut().copy_from_slice(bytes);
 
@@ -229,6 +230,9 @@ impl UploadBelt {
                     .copy_from_slice(&bytes[source..source + row as usize]);
             }
         }
+        zgui_profile::latency::note_with("gpu.copy", || {
+            format!("site=texture-upload bytes={}", bytes.len())
+        });
         encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
                 buffer: &chunk.buffer,

@@ -59,7 +59,7 @@ pub fn start_epoch() {
 ///
 /// One check in front of every mark, so the cost of instrumentation in a build nobody is measuring
 /// stays at a relaxed load whichever of the two sinks exists.
-fn listening() -> bool {
+pub fn listening() -> bool {
     ENABLED.load(Ordering::Relaxed) || crate::latency::ring::retaining()
 }
 

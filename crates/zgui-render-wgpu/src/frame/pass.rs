@@ -129,6 +129,13 @@ impl Recorder<'_> {
                 if read.is_empty() {
                     return;
                 }
+                zgui_profile::latency::note_with("gpu.copy", || {
+                    format!(
+                        "site=capture px={} box={}",
+                        read.size.width as i64 * read.size.height as i64,
+                        rect_note(region)
+                    )
+                });
                 encoder.copy_texture_to_texture(
                     texel_copy(from, read),
                     texel_copy(to, write),
@@ -202,11 +209,16 @@ impl Recorder<'_> {
             scissor.size.width.max(0) as u32,
             scissor.size.height.max(0) as u32,
         );
-        let mut pass = BoundPass::new(pass);
+        let mut pass = BoundPass::new(pass, planned.target, planned.scissor);
         let tables = self
             .buffers
             .frame_bind_group(self.gpu, self.pipelines.layouts());
-        for draw in plan.draws_of(planned) {
+        for (offset, draw) in plan.draws_of(planned).iter().enumerate() {
+            pass.ink = plan
+                .ink
+                .get(planned.draws.start + offset)
+                .copied()
+                .flatten();
             let issued = self.issue(&mut pass, planned, tables.as_ref(), draw, format);
             if issued {
                 recorded.draw_calls += 1;
@@ -720,15 +732,23 @@ struct BoundPass<'pass> {
     pipeline: Option<Bound>,
     /// The bind group and the dynamic offset bound last at each index.
     groups: [Option<(wgpu::BindGroup, Option<u32>)>; BIND_SLOTS],
+    /// What the pass draws into and its scissor, for the latency trace.
+    target: TargetRef,
+    scissor: Rect<i32, Device>,
+    /// What the planned draw being issued covers, when the trace is listening and it is known.
+    ink: Option<crate::frame::reach::Ink>,
 }
 
 impl<'pass> BoundPass<'pass> {
     /// `pass`, with nothing bound yet.
-    fn new(pass: wgpu::RenderPass<'pass>) -> Self {
+    fn new(pass: wgpu::RenderPass<'pass>, target: TargetRef, scissor: Rect<i32, Device>) -> Self {
         Self {
             pass,
             pipeline: None,
             groups: Default::default(),
+            target,
+            scissor,
+            ink: None,
         }
     }
 
@@ -760,8 +780,49 @@ impl<'pass> BoundPass<'pass> {
 
     /// Draws `instances` of a strip of `vertices`.
     fn draw(&mut self, vertices: core::ops::Range<u32>, instances: core::ops::Range<u32>) {
+        let count = instances.len();
         self.pass.draw(vertices, instances);
+        // One note per draw call, in issue order: the order the device runs them in, so a
+        // driver's per-draw timings (Mesa's INTEL_MEASURE) line up with these one to one.
+        zgui_profile::latency::note_with("gpu.draw", || {
+            let fs = match self.pipeline {
+                Some(Bound::Kind(kind)) => kind.fragment_entry(),
+                Some(Bound::Effect(_)) => "effect",
+                None => "none",
+            };
+            let target = match self.target {
+                TargetRef::Composed => "composed",
+                TargetRef::Pool(_) => "group",
+                TargetRef::MarksPage(_) => "marks",
+            };
+            let scissor = rect_note(self.scissor);
+            match self.ink {
+                Some(ink) => format!(
+                    "fs={fs} n={count} target={target} scissor={scissor} px={} box={}",
+                    ink.pixels,
+                    rect_note(ink.covered)
+                ),
+                // A full-target quad (a clear, a composite, a filter) covers the scissor.
+                None if matches!(self.pipeline, Some(Bound::Kind(PipelineKind::DamageClear))) => {
+                    format!(
+                        "fs={fs} n={count} target={target} scissor={scissor} px={} box={scissor}",
+                        self.scissor.size.width as i64 * self.scissor.size.height as i64
+                    )
+                }
+                None => {
+                    format!("fs={fs} n={count} target={target} scissor={scissor} box={scissor}")
+                }
+            }
+        });
     }
+}
+
+/// `rect` as the latency trace writes one: `x,y,width,height`.
+pub(crate) fn rect_note(rect: Rect<i32, Device>) -> String {
+    format!(
+        "{},{},{},{}",
+        rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
+    )
 }
 
 /// The kind of work a pass into `target` is timed as.
