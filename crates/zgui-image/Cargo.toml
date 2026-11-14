@@ -19,6 +19,7 @@ zgui-geom = { path = "../zgui-geom", version = "0.1.0" }
 # The codecs. This crate is the only one in the workspace that names them, so which formats an
 # application links is decided in exactly one place.
 image.workspace = true
+fast_image_resize = "5"
 thiserror.workspace = true
 
 [lints]

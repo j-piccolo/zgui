@@ -352,6 +352,17 @@ impl GpuTimer {
                 reason = "a frame's GPU time in nanoseconds is far below 2^64"
             )]
             counter::add(Counter::GpuTimeNs, (timing.total_ms() * 1e6) as u64);
+            zgui_profile::latency::note_with("gpu.t", || {
+                format!(
+                    "{} {:.3} {:.3} {:.3} {:.3} {:.3}",
+                    timing.frame,
+                    timing.total_ms(),
+                    timing.draws_ms,
+                    timing.groups_ms,
+                    timing.vectors_ms,
+                    timing.blit_ms
+                )
+            });
             if self.done.len() == KEPT {
                 self.done.pop_front();
             }

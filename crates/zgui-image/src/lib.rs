@@ -295,26 +295,42 @@ pub fn bytes_for_url(url: &str) -> Option<Arc<Vec<u8>>> {
 }
 
 /// Downscales, converts and premultiplies one decoded image.
+///
+/// Premultiplies before the resize, so that the colour of a transparent pixel does not bleed into
+/// its neighbours. The resize is `fast_image_resize` super-sampling: a box filter to twice the
+/// target, then Lanczos3. For a source many times larger than the target, such as a poster shown
+/// as a thumbnail, this costs a small fraction of a full Lanczos3.
 fn finish(decoded: image::DynamicImage, max_long_edge: u32) -> Result<Decoded, DecodeError> {
+    use fast_image_resize as fr;
+
     let (width, height) = (decoded.width(), decoded.height());
     if width == 0 || height == 0 {
         return Err(DecodeError::Empty);
     }
-    let max = max_long_edge.max(1);
-    let decoded = if width > max || height > max {
-        // Lanczos, because a downscale forced by a texture limit is permanent: the discarded
-        // resolution is never coming back, so it is worth the best filter the codec crate has.
-        decoded.resize(max, max, image::imageops::FilterType::Lanczos3)
-    } else {
-        decoded
-    };
-
-    let size = Size::new(decoded.width(), decoded.height());
     let mut texels = decoded.into_rgba8().into_raw();
     premultiply(&mut texels);
+    let max = max_long_edge.max(1);
+    if width <= max && height <= max {
+        return Ok(Decoded {
+            size: Size::new(width, height),
+            texels: Arc::new(texels),
+        });
+    }
+    let scale = f64::from(max) / f64::from(width.max(height));
+    let to_width = ((f64::from(width) * scale).round() as u32).clamp(1, max);
+    let to_height = ((f64::from(height) * scale).round() as u32).clamp(1, max);
+    let source = fr::images::Image::from_vec_u8(width, height, texels, fr::PixelType::U8x4)
+        .map_err(|_| DecodeError::Empty)?;
+    let mut target = fr::images::Image::new(to_width, to_height, fr::PixelType::U8x4);
+    let options = fr::ResizeOptions::new()
+        .resize_alg(fr::ResizeAlg::SuperSampling(fr::FilterType::Lanczos3, 2))
+        .use_alpha(false);
+    fr::Resizer::new()
+        .resize(&source, &mut target, &options)
+        .map_err(|_| DecodeError::Empty)?;
     Ok(Decoded {
-        size,
-        texels: Arc::new(texels),
+        size: Size::new(to_width, to_height),
+        texels: Arc::new(target.into_vec()),
     })
 }
 

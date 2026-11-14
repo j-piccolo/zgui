@@ -149,3 +149,67 @@ fn texel_copy(texture: &wgpu::Texture, at: Rect<i32, Device>) -> wgpu::TexelCopy
         aspect: wgpu::TextureAspect::All,
     }
 }
+
+/// Copies the still-valid part of `shift`'s region from `composed` to its new place in `spare`,
+/// and copies all other pixels of `composed` to the same place in `spare`.
+///
+/// The source and the destination are different textures, so the surviving area is copied once
+/// and needs no scratch. The caller then swaps the two targets. After this, `spare` holds every
+/// pixel of `composed`, with the region moved. The strip that the move uncovers is damage, and the
+/// frame draws it again.
+///
+/// Returns whether anything was moved, under the same contract as [`apply`].
+pub fn apply_into(
+    encoder: &mut wgpu::CommandEncoder,
+    composed: &SceneTexture,
+    spare: &SceneTexture,
+    shift: ScrollShift,
+) -> bool {
+    let (Some(from), Some(to)) = (shift.source(), shift.destination()) else {
+        return false;
+    };
+    if from.size.width <= 0 || from.size.height <= 0 {
+        return false;
+    }
+    let copy =
+        |encoder: &mut wgpu::CommandEncoder, read: Rect<i32, Device>, write: Rect<i32, Device>| {
+            if read.size.width <= 0 || read.size.height <= 0 {
+                return;
+            }
+            encoder.copy_texture_to_texture(
+                texel_copy(composed.texture(), read),
+                texel_copy(spare.texture(), write),
+                wgpu::Extent3d {
+                    width: read.size.width as u32,
+                    height: read.size.height as u32,
+                    depth_or_array_layers: 1,
+                },
+            );
+        };
+    copy(encoder, from, to);
+    // The rest of the surface, as up to four bands around `to`: above, below, then the two sides
+    // of its rows.
+    let used = composed.used();
+    let (left, top) = (used.origin.x, used.origin.y);
+    let (right, bottom) = (left + used.size.width, top + used.size.height);
+    let (to_left, to_top) = (to.origin.x.max(left), to.origin.y.max(top));
+    let (to_right, to_bottom) = (
+        (to.origin.x + to.size.width).min(right),
+        (to.origin.y + to.size.height).min(bottom),
+    );
+    let band = |x0: i32, y0: i32, x1: i32, y1: i32| {
+        Rect::new(
+            zgui_geom::Point::new(x0, y0),
+            zgui_geom::Size::new(x1 - x0, y1 - y0),
+        )
+    };
+    for rect in [
+        band(left, top, right, to_top),
+        band(left, to_bottom, right, bottom),
+        band(left, to_top, to_left, to_bottom),
+        band(to_right, to_top, right, to_bottom),
+    ] {
+        copy(encoder, rect, rect);
+    }
+    true
+}
