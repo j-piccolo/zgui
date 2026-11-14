@@ -442,7 +442,13 @@ impl Recorder<'_> {
         if let Some(bind_group) = atlas {
             pass.set_bind_group(2, bind_group, &[]);
         }
-        pass.draw(0..4, range.start as u32..range.end as u32);
+        // A shadow is a ring of ten strip vertices around the core of its box. Other kinds are quads.
+        let vertices = if kind == PipelineKind::Shadow {
+            0..10
+        } else {
+            0..4
+        };
+        pass.draw(vertices, range.start as u32..range.end as u32);
         true
     }
 

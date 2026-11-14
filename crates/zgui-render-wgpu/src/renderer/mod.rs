@@ -128,6 +128,11 @@ pub struct WgpuRenderer {
     /// `None` for a window that has never shifted anything, which is every window that has never
     /// scrolled a self-contained region.
     shift_scratch: Option<crate::frame::shift::ShiftScratch>,
+    /// The second composed target that a scroll shift copies into, with its bind group. After a
+    /// shift it changes places with [`Self::composed`]. `None` until the first shift.
+    spare: Option<(crate::target::scene_texture::SceneTexture, wgpu::BindGroup)>,
+    /// What each presented image is missing, so that the copy to the surface writes only that.
+    history: crate::frame::age::PresentHistory,
     /// The bin pages union marks write their coverage into.
     marks_scratch: crate::target::marks::MarksScratch,
     /// A region of the composed target whose pixels are to be moved before this frame draws.
@@ -157,6 +162,12 @@ pub struct WgpuRenderer {
     present_gate: Option<PresentGate>,
     /// Whether the composed target holds a frame the gate held back.
     held: bool,
+    /// The surface texture acquired for a held frame, presented when the gate opens.
+    ///
+    /// The gate opens on the compositor's frame callback, while the compositor's composite is on
+    /// the device. An acquisition at that moment waits for the composite. An acquisition at the end
+    /// of the draw comes after it, so opening the gate costs only the copy and the present.
+    staged: Option<crate::target::swapchain::Presented>,
     /// How long the last frame waited to be handed a surface to present into.
     acquire_block: std::time::Duration,
     /// How many times *this* surface's acquisition has failed validation in a row.
@@ -252,6 +263,8 @@ impl WgpuRenderer {
             // holds however small its damage set is.
             full_damage_next: true,
             shift_scratch: None,
+            spare: None,
+            history: crate::frame::age::PresentHistory::default(),
             marks_scratch: crate::target::marks::MarksScratch::default(),
             pending_shift: None,
             present_composed_next: false,
@@ -263,6 +276,7 @@ impl WgpuRenderer {
             pre_present,
             present_gate: None,
             held: false,
+            staged: None,
             acquire_block: std::time::Duration::ZERO,
             consecutive_validation_failures: 0,
             origin,
@@ -618,6 +632,8 @@ impl WgpuRenderer {
     fn resize(&mut self, size: Size<i32, Device>) {
         self.presentation.resize(&self.gpu, size);
         self.groups.resize(size);
+        // The spare is sized against the composed target when a shift next asks for it.
+        self.spare = None;
         if self.composed.resize(&self.gpu, size) {
             self.composed_binding =
                 bind_composed(&self.gpu, &self.pipelines.borrow(), &self.composed);

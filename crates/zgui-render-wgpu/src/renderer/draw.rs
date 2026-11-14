@@ -24,6 +24,9 @@ impl Renderer for WgpuRenderer {
     }
 
     fn configure(&mut self, target: RenderTarget) {
+        // A texture of the old swap chain must not outlive the reconfiguration.
+        self.staged = None;
+        self.history.forget();
         // A change of scale or of opacity changes what every composed pixel means, and moves no
         // allocation that would otherwise say so. A change of size alone keeps the composed target
         // whenever it still fits, and the pixels in it are the last frame's: the caller damages
@@ -109,6 +112,7 @@ impl Renderer for WgpuRenderer {
         // Nothing is stalled by doing it early: the wait a rebuild costs is a wait for work still in
         // flight, and a surface that has never been configured, or has stopped being, has none.
         if !self.presentation.is_configured() {
+            self.staged = None;
             self.presentation.apply_pending(&self.gpu);
         }
         // The one early exit that keeps its damage, because it records nothing.
@@ -241,14 +245,30 @@ impl Renderer for WgpuRenderer {
         let mut encoder = self.frame_encoder();
         // Before anything this frame draws, and after nothing: the passes below clear and redraw
         // each damage rectangle, and the pixels this moves are the ones outside them.
+        let mut shifted = None;
         if let Some(shift) = self.pending_shift.take() {
-            let moved = crate::frame::shift::apply(
-                &self.gpu,
-                &mut encoder,
-                &self.composed,
-                &mut self.shift_scratch,
-                shift,
-            );
+            let fits = self.spare.as_ref().is_some_and(|(spare, _)| {
+                spare.allocated() == self.composed.allocated()
+                    && spare.format() == self.composed.format()
+            });
+            if !fits {
+                let spare = crate::target::scene_texture::SceneTexture::new(
+                    &self.gpu,
+                    self.composed.used().size,
+                    self.composed.format(),
+                );
+                let binding = super::bind_composed(&self.gpu, &self.pipelines.borrow(), &spare);
+                self.spare = Some((spare, binding));
+            }
+            let (spare, _) = self.spare.as_mut().expect("just made");
+            spare.resize(&self.gpu, self.composed.used().size);
+            let moved = crate::frame::shift::apply_into(&mut encoder, &self.composed, spare, shift);
+            if moved {
+                shifted = Some(shift.port);
+                let (spare, binding) = self.spare.as_mut().expect("just made");
+                core::mem::swap(&mut self.composed, spare);
+                core::mem::swap(&mut self.composed_binding, binding);
+            }
             zgui_profile::latency::note("r.shift", format!("by={:?} moved={moved}", shift.by));
         }
         zgui_profile::latency::mark("r.buffers");
@@ -292,10 +312,17 @@ impl Renderer for WgpuRenderer {
             );
         }
 
+        let mut changes = crate::frame::damage::rects(damage, self.composed.used()).to_vec();
+        changes.extend(shifted);
+        self.history.changed(changes);
+
         // The platform may not be ready for another buffer. The frame is composed and submitted
         // either way, so its damage retires; the copy to the surface waits for `present_held`.
         self.held = self.present_gate.as_ref().is_some_and(|gate| !gate());
         if self.held {
+            if self.staged.is_none() {
+                self.staged = Some(self.acquire_surface());
+            }
             self.submit_frame(encoder);
             zgui_profile::latency::mark("sub.held");
             self.present_composed_next = true;
@@ -304,10 +331,14 @@ impl Renderer for WgpuRenderer {
             return FrameOutcome::Skipped(SkipReason::Held);
         }
 
-        let presented = self.acquire_surface();
+        let presented = match self.staged.take() {
+            Some(staged) => staged,
+            None => self.acquire_surface(),
+        };
         let mut draw_calls = recorded.draw_calls;
         if let Some(view) = &presented.view {
-            self.blit(&mut encoder, view, formats.blit_undoes_srgb());
+            let image = image_of(&presented);
+            self.blit(&mut encoder, view, formats.blit_undoes_srgb(), image);
             draw_calls += 1;
         }
         self.submit_frame(encoder);
@@ -334,14 +365,37 @@ impl Renderer for WgpuRenderer {
         // nothing worth presenting. The next frame draws again, and presents what it draws.
         if self.full_damage_next || !self.presentation.is_configured() || self.gpu.loss().is_lost()
         {
+            self.staged = None;
             return FrameOutcome::Skipped(SkipReason::Unacquired);
+        }
+        if let Some(staged) = self.staged.take() {
+            let draw_calls = u32::from(staged.view.is_some());
+            if let Some(view) = &staged.view {
+                let mut encoder = self.frame_encoder();
+                let image = image_of(&staged);
+                self.blit(
+                    &mut encoder,
+                    view,
+                    self.presentation.formats().blit_undoes_srgb(),
+                    image,
+                );
+                self.gpu.queue().submit([encoder.finish()]);
+            }
+            let acquisition = staged.acquisition;
+            self.hand_over(staged);
+            return acquisition.outcome(FrameStats {
+                draw_calls,
+                memory: self.memory(),
+                ..FrameStats::default()
+            });
         }
         let formats = self.presentation.formats();
         let presented = self.acquire_surface();
         let mut encoder = self.frame_encoder();
         let mut draw_calls = 0;
         if let Some(view) = &presented.view {
-            self.blit(&mut encoder, view, formats.blit_undoes_srgb());
+            let image = image_of(&presented);
+            self.blit(&mut encoder, view, formats.blit_undoes_srgb(), image);
             draw_calls = 1;
         }
         self.gpu.queue().submit([encoder.finish()]);
@@ -387,7 +441,8 @@ impl Renderer for WgpuRenderer {
                 + self
                     .shift_scratch
                     .as_ref()
-                    .map_or(0, crate::frame::shift::ShiftScratch::bytes),
+                    .map_or(0, crate::frame::shift::ShiftScratch::bytes)
+                + self.spare.as_ref().map_or(0, |(spare, _)| spare.bytes()),
             lent: self.groups.lent_bytes(),
             leases: self.groups.leases(),
         }
@@ -397,7 +452,8 @@ impl Renderer for WgpuRenderer {
         let scratch = self
             .shift_scratch
             .take()
-            .map_or(0, |held| crate::frame::shift::ShiftScratch::bytes(&held));
+            .map_or(0, |held| crate::frame::shift::ShiftScratch::bytes(&held))
+            + self.spare.take().map_or(0, |(spare, _)| spare.bytes());
         // A kept bind group holds its view, so a target is freed only once those are dropped too.
         self.buffers.forget_view_binds();
         self.groups.release_unused() + scratch + self.marks_scratch.release()
@@ -734,7 +790,26 @@ impl WgpuRenderer {
     }
 
     /// Copies the composed target onto whatever is being presented to.
-    fn blit(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, undo: bool) {
+    fn blit(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        undo: bool,
+        image: Option<crate::frame::age::Image>,
+    ) {
+        let surface = zgui_geom::Rect::new(
+            zgui_geom::Point::new(0, 0),
+            zgui_geom::Size::new(self.target.size.width, self.target.size.height),
+        );
+        let missing = image
+            .as_ref()
+            .and_then(|image| self.history.missing(image, surface));
+        if let Some(image) = image {
+            self.history.presented(image);
+        }
+        if missing.as_ref().is_some_and(Vec::is_empty) {
+            return;
+        }
         let kind = if undo {
             PipelineKind::BlitUndoSrgb
         } else {
@@ -756,9 +831,13 @@ impl WgpuRenderer {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    // Every pixel is written, so nothing has to be preserved and no clear is
-                    // inserted ahead of the copy.
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    // A whole copy writes every pixel, so nothing has to be preserved and no clear
+                    // is inserted ahead of it. A partial one keeps what the image already holds.
+                    load: if missing.is_some() {
+                        wgpu::LoadOp::Load
+                    } else {
+                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                    },
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -769,6 +848,31 @@ impl WgpuRenderer {
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &self.composed_binding, &[]);
-        pass.draw(0..4, 0..1);
+        match missing {
+            None => pass.draw(0..4, 0..1),
+            Some(rects) => {
+                for rect in rects {
+                    if rect.size.width <= 0 || rect.size.height <= 0 {
+                        continue;
+                    }
+                    pass.set_scissor_rect(
+                        rect.origin.x.max(0) as u32,
+                        rect.origin.y.max(0) as u32,
+                        rect.size.width as u32,
+                        rect.size.height as u32,
+                    );
+                    pass.draw(0..4, 0..1);
+                }
+            }
+        }
+    }
+}
+
+/// How the image `presented` copies into is told apart from the others.
+fn image_of(presented: &crate::target::swapchain::Presented) -> Option<crate::frame::age::Image> {
+    match (&presented.surface_texture, &presented.view) {
+        (Some(texture), _) => Some(crate::frame::age::Image::Texture(texture.texture.clone())),
+        (None, Some(view)) => Some(crate::frame::age::Image::Texture(view.texture().clone())),
+        (None, None) => None,
     }
 }
