@@ -29,6 +29,9 @@ pub struct FramePlan {
     pub unisolated: u32,
     /// How many instanced batches were left out of a pass whose scissor they miss.
     pub culled: u32,
+    /// What each draw covers, beside `draws`, for the latency trace's `gpu.draw` notes. Filled
+    /// only while the trace is listening; empty otherwise.
+    pub ink: Vec<Option<crate::frame::reach::Ink>>,
 }
 
 impl FramePlan {
@@ -416,6 +419,19 @@ impl<'gpu> PlanBuilder<'gpu> {
             .expect("a draw is always planned into an open pass");
         self.plan.draws.push(draw);
         open.draws.end = self.plan.draws.len();
+        if zgui_profile::latency::listening() {
+            self.plan.ink.resize(self.plan.draws.len(), None);
+        }
+    }
+
+    /// Records what the draw planned last covers, for the latency trace.
+    pub fn ink(&mut self, ink: Option<crate::frame::reach::Ink>) {
+        if self.plan.ink.len() != self.plan.draws.len() {
+            return;
+        }
+        if let Some(last) = self.plan.ink.last_mut() {
+            *last = ink;
+        }
     }
 
     /// Closes the open pass, dropping it if it drew nothing or may write nothing.

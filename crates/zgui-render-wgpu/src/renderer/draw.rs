@@ -872,14 +872,31 @@ impl WgpuRenderer {
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &self.composed_binding, &[]);
+        let fs = kind.fragment_entry();
+        // Noted as `gpu.draw` like every pass draw, so a driver's per-draw timings stay in step.
+        let note = |rect: zgui_geom::Rect<i32, zgui_geom::Device>| {
+            zgui_profile::latency::note_with("gpu.draw", || {
+                let at = crate::frame::pass::rect_note(rect);
+                format!(
+                    "fs={fs} n=1 target=surface scissor={at} px={} box={at}",
+                    rect.size.width as i64 * rect.size.height as i64
+                )
+            });
+        };
         match missing {
             None => {
                 // A cropping swap chain can be larger than the frame. Only the frame's extent is
                 // shown, so only that is copied, and nothing reads past the composed target.
+                let mut drawn = surface;
                 if let Some((width, height)) = limit {
                     pass.set_scissor_rect(0, 0, width, height);
+                    drawn = zgui_geom::Rect::new(
+                        zgui_geom::Point::new(0, 0),
+                        zgui_geom::Size::new(width as i32, height as i32),
+                    );
                 }
                 pass.draw(0..4, 0..1);
+                note(drawn);
             }
             Some(rects) => {
                 for rect in rects {
@@ -893,6 +910,7 @@ impl WgpuRenderer {
                         rect.size.height as u32,
                     );
                     pass.draw(0..4, 0..1);
+                    note(rect);
                 }
             }
         }
