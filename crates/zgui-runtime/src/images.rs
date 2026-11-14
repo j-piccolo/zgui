@@ -295,6 +295,13 @@ pub(crate) struct ImageLoader {
     /// The subset of [`ImageLoader::held_bytes`] nothing pins: variants that are not attached,
     /// and every variant of a source no node shows.
     evictable_bytes: u64,
+    /// Whether a demand can have changed since [`ImageLoader::observe_demand`] last read them.
+    ///
+    /// A demand is a function of a node's laid-out content box, its source's extent and the
+    /// scale. A scroll or a transform changes none of these, so most frames read nothing.
+    demand_stale: bool,
+    /// The scale the demands were last read at.
+    demand_scale: f32,
 }
 
 impl ImageLoader {
@@ -312,6 +319,8 @@ impl ImageLoader {
             clock: 0,
             held_bytes: 0,
             evictable_bytes: 0,
+            demand_stale: true,
+            demand_scale: 0.0,
         }
     }
 
@@ -348,6 +357,9 @@ impl ImageLoader {
         self.clock += 1;
         let mut touched: Vec<NodeKey> = Vec::new();
 
+        if !self.pending.borrow().is_empty() || !self.completed.borrow().is_empty() {
+            self.demand_stale = true;
+        }
         let pending = std::mem::take(&mut *self.pending.borrow_mut());
         for (node, src) in pending {
             self.set_source(node, src.as_deref(), content, &mut touched);
@@ -381,6 +393,13 @@ impl ImageLoader {
     /// [`ImageLoader::settle`]: the caller owes them a frame.
     #[must_use = "a demand that kicked decodes is owed the frame that will poll them"]
     pub(crate) fn observe_demand(&mut self, layout: &LayoutStore, scale: f32) -> bool {
+        if scale != self.demand_scale {
+            self.demand_scale = scale;
+            self.demand_stale = true;
+        }
+        if !core::mem::take(&mut self.demand_stale) {
+            return false;
+        }
         let kicked_before = self.kicked;
         let mut demands: FxHashMap<SourceKey, u32> = FxHashMap::default();
         for (node, key) in &self.by_node {
@@ -406,6 +425,11 @@ impl ImageLoader {
             );
         }
         self.kicked != kicked_before
+    }
+
+    /// Notes that a layout pass ran, so any content box, and with it any demand, can have changed.
+    pub(crate) fn layout_changed(&mut self) {
+        self.demand_stale = true;
     }
 
     /// Points `node` at `src`, or at nothing.
@@ -651,6 +675,9 @@ impl ImageLoader {
             .copied()
             .filter(|&node| !live(node))
             .collect();
+        if !dead.is_empty() {
+            self.demand_stale = true;
+        }
         for node in dead {
             let key = self.by_node.remove(&node).expect("was just iterated");
             if let Some(entry) = self.entries.get_mut(&key) {
