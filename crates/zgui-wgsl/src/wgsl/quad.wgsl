@@ -70,6 +70,25 @@ fn fs_quad(in: QuadVarying) -> @location(0) vec4<f32> {
     // a derivative is only defined where every fragment of the quad takes it.
     let unit = max(max(fwidth(in.local).x, fwidth(in.local).y), 1e-6);
     let quad = quads[in.instance];
+    // A box with no fill draws nothing inside its border: a panel's rim, a card's stroke. Its quad
+    // still covers the whole box, so those pixels are dropped here, on the geometry alone, before
+    // the clip and the paints are read. Only the straight inside is: near a rounded corner the
+    // inner edge curves, and the full test below decides.
+    if quad.fill.kind == PAINT_NONE {
+        let half = bounds_size(quad.bounds) * 0.5;
+        let from_center = in.local - half;
+        let from_corner = abs(from_center) - half;
+        let radii = pick_corner_radii(from_center, quad.radii);
+        let sides = vec2<f32>(
+            select(quad.border.right, quad.border.left, from_center.x < 0.0),
+            select(quad.border.bottom, quad.border.top, from_center.y < 0.0),
+        );
+        let inside = from_corner + sides;
+        let in_corner = from_corner.x + radii.x >= 0.0 && from_corner.y + radii.y >= 0.0;
+        if max(inside.x, inside.y) < -0.5 * unit && !in_corner {
+            discard;
+        }
+    }
     // The clip is in device space, so it is evaluated at the real pixel; the shape is in the
     // primitive's own space, so it is evaluated at the point that maps to this pixel.
     let clip = clip_coverage(device_position(in.position.xy), quad.clip);
