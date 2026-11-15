@@ -1684,6 +1684,9 @@ impl Window {
                 // A full set means the surface and nothing more. Without the bound, the walk visits
                 // every fragment of the document, also the rows of a long scroll container.
                 surface: Some(zgui_geom::Rect::new(zgui_geom::Point::new(0, 0), viewport)),
+                // Named in the latency trace, so the renderer's per-draw notes can be put on the
+                // elements that drew them.
+                record_chunks: zgui_profile::latency::listening(),
                 ..PaintInput::new(&layout, &self.damage)
             };
             zgui_profile::latency::note_with("d.postexpand", || {
@@ -1698,6 +1701,7 @@ impl Window {
             mark("p.emit");
             let before = glyph_counts();
             let report = self.painter.emit(&input, &mut self.scene);
+            crate::window::owners::note(&document, &report.chunks);
             vector_report = report.vector_routes;
             self.layers_owed = report.layers_owed;
             let after = glyph_counts();

@@ -82,13 +82,17 @@ fn reach_of(scene: &Scene, spaces: &mut Spaces<'_>, batch: &Batch) -> Option<Rec
 }
 
 /// What one instanced batch covers inside a pass's scissor, for the latency trace: the device
-/// pixels its instances cover, counted once per instance, and the box around them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// pixels its instances cover, counted once per instance, the box around them, and the chunks
+/// they came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ink {
     /// Device pixels covered, summed over the instances, so overlap counts each time.
     pub pixels: u64,
     /// The box around every instance's covered part.
     pub covered: Rect<i32, Device>,
+    /// The pixels of `pixels` each chunk's instances cover, as `(revision, pixels)`, largest
+    /// first. Revision zero is content drawn outside any chunk.
+    pub owners: Vec<(u64, u64)>,
 }
 
 /// What `batch` covers inside `scissor`, or `None` for a batch that is not instanced or not
@@ -111,7 +115,9 @@ pub fn ink(scene: &Scene, batch: &Batch, scissor: Rect<i32, Device>) -> Option<I
     let (cut_left, cut_top) = (scissor.origin.x, scissor.origin.y);
     let cut_right = cut_left + scissor.size.width;
     let cut_bottom = cut_top + scissor.size.height;
+    let provenance = scene.provenance(kind);
     let mut pixels = 0u64;
+    let mut owners: Vec<(u64, u64)> = Vec::new();
     let mut low = (i32::MAX, i32::MAX);
     let mut high = (i32::MIN, i32::MIN);
     for &slot in scene.remap(kind).get(range.clone())? {
@@ -131,7 +137,15 @@ pub fn ink(scene: &Scene, batch: &Batch, scissor: Rect<i32, Device>) -> Option<I
         if right <= left || bottom <= top {
             continue;
         }
-        pixels += (right - left) as u64 * (bottom - top) as u64;
+        let area = (right - left) as u64 * (bottom - top) as u64;
+        pixels += area;
+        let revision = provenance
+            .get(slot as usize)
+            .map_or(0, |chunk| chunk.revision);
+        match owners.iter_mut().find(|(owner, _)| *owner == revision) {
+            Some((_, owned)) => *owned += area,
+            None => owners.push((revision, area)),
+        }
         low = (low.0.min(left), low.1.min(top));
         high = (high.0.max(right), high.1.max(bottom));
     }
@@ -140,7 +154,12 @@ pub fn ink(scene: &Scene, batch: &Batch, scissor: Rect<i32, Device>) -> Option<I
     } else {
         Rect::from_corners(Point::new(low.0, low.1), Point::new(high.0, high.1))
     };
-    Some(Ink { pixels, covered })
+    owners.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    Some(Ink {
+        pixels,
+        covered,
+        owners,
+    })
 }
 
 /// The last quad in `batches` that hides everything drawn before it inside `rect`, as the index
