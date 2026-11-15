@@ -42,9 +42,9 @@ use crate::spatial::SpatialId;
 pub struct Placement {
     /// The rectangles the move has to be redrawn over: where the ink was, and where it is.
     ///
-    /// Empty when nothing moved, and empty when the write was refused — a refusal leaves the
-    /// matrix where it was, so there is nothing to redraw *yet*, and what the caller owes instead
-    /// is the composition it was refused.
+    /// Empty when nothing moved. When the box left its declared region, it is where the ink is
+    /// now: the composition the caller owes instead damages where the box was last *composed*, and
+    /// writes since then have drawn it somewhere else.
     pub damage: DamageSet,
     /// Whether the matrix was written.
     ///
@@ -219,7 +219,13 @@ impl Scene {
 
         let arrived = transformed_bounds(&after, subtree);
         if !travel.admits(arrived) {
-            return Placement::refused(true);
+            let mut refused = Placement::refused(true);
+            refused
+                .damage
+                .absorb(crate::place::ink::whole(transformed_bounds(
+                    &before, subtree,
+                )));
+            return refused;
         }
 
         if !self.spatial.place(node, local) {
