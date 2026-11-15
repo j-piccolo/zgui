@@ -66,6 +66,10 @@ const SHEET: &str = css!(
     @keyframes reveal { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; } }"
 );
 
+#[allow(
+    clippy::redundant_closure,
+    reason = "`column` in `view!` is the element macro, which clippy takes for a function"
+)]
 fn main() -> Result<(), zgui::Error> {
     app()
         .with_application_id("dev.zgui.Layer")
