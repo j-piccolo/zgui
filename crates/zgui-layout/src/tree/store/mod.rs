@@ -374,12 +374,24 @@ impl LayoutStore {
         let slot = self.styles.intern(style);
         let none = Some(CustomProperties::NONE);
         let proven = only_colours && declared == none && self.styles.declared(slot, style) == none;
+        // Whether the box's new style is lowered as the old one was. The engine style names the
+        // `calc()` identifiers of its lowering, so a different lowering owes it a fresh one.
+        let same_lowering = self
+            .style_slots
+            .get(key)
+            .copied()
+            .flatten()
+            .is_some_and(|held| self.styles.same_lowering(held, slot));
         if let Some(held) = self.style_slots.replace(key, Some(slot)) {
             self.styles.release(held);
         }
-        // A proven box keeps its rosters and its lowering, so its engine style stands.
+        // A proven box keeps its rosters and its lowering, so its engine style stands, unless the
+        // lowering it was made from is not the one the new style is lowered as.
         if proven {
             self.recoloured.insert(key);
+            if !same_lowering {
+                self.engine_pending.push(key);
+            }
         } else {
             self.restyled_unproven = true;
             self.classify(key, style);
