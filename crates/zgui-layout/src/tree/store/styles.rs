@@ -101,6 +101,13 @@ pub(crate) struct StyleTable {
     by_layout: FxHashMap<LayoutKey, Lowering>,
     /// Slots waiting to be lowered.
     pending: Vec<u32>,
+    /// The keys of dropped entries, let go only once the pending slots are lowered.
+    ///
+    /// A box whose colours alone change keeps its engine style, and that style names the `calc()`
+    /// identifiers of the lowering it was made from. The box's new entry holds the same lowering
+    /// only once it is lowered, so the old entry's hold is kept until then. Let go at once, the
+    /// last hold would release the identifiers while the box's engine style still names them.
+    retiring: Vec<LayoutKey>,
     /// The device every held lowering was lowered for.
     lowered_for: Option<DeviceStyle>,
     /// The `calc()` expressions the lowerings refer to.
@@ -164,7 +171,7 @@ impl StyleTable {
         let entry = self.entries[index].take().expect("the entry checked above");
         self.by_cascade.remove(&cascade_address(&entry.style));
         if entry.lowered.is_some() {
-            Self::let_go(&mut self.by_layout, &mut self.calc, entry.key);
+            self.retiring.push(entry.key);
         }
         self.free.push(slot.0);
     }
@@ -199,6 +206,8 @@ impl StyleTable {
         if relowered {
             self.calc.set_scale(device.scale);
             self.pending.clear();
+            // Every lowering is let go just below.
+            self.retiring.clear();
             for lowering in self.by_layout.drain() {
                 for id in lowering.1.calc_ids {
                     self.calc.release(id);
@@ -243,6 +252,9 @@ impl StyleTable {
             entry.lowered = Some(lowered);
             counter::bump(Counter::StylesLowered);
         }
+        for key in core::mem::take(&mut self.retiring) {
+            Self::let_go(&mut self.by_layout, &mut self.calc, key);
+        }
         relowered
     }
 
@@ -274,6 +286,16 @@ impl StyleTable {
         suffix: cephal::tree::IdentSuffix,
     ) -> Option<cephal::style::Ident> {
         self.idents.suffixed(base, suffix)
+    }
+
+    /// Whether two slots are lowered from the same layout key, and so share one lowering.
+    pub(crate) fn same_lowering(&self, a: StyleSlot, b: StyleSlot) -> bool {
+        let key = |slot: StyleSlot| {
+            self.entries[slot.0 as usize]
+                .as_ref()
+                .map(|entry| entry.key)
+        };
+        key(a).is_some() && key(a) == key(b)
     }
 
     pub(crate) fn interned_calcs(&self) -> usize {
@@ -364,6 +386,10 @@ mod tests {
             "the other entry still holds the lowering"
         );
         table.release(slots[1]);
+        // The last hold is let go once the next lowering pass has run, so a style interned in
+        // between with the same key can still take it.
+        assert_eq!(table.by_layout.len(), 1);
+        table.ensure_lowered(DeviceStyle::default());
         assert_eq!(table.by_layout.len(), 0);
     }
 
