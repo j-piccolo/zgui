@@ -61,6 +61,9 @@ impl Placer for Writing<'_> {
         // Refused: either nothing had been declared for this coordinate system yet, or the box was
         // heading out of what had been. Either way the frame composes it, and composing it is what
         // orders it against the region it is about to be seen in.
+        // A box heading out was drawn by the writes before this one, so where its ink is now is
+        // damaged here: the composition damages only where the box was last composed.
+        self.damage.absorb_set(&placement.damage);
         self.scene.widen_travel(space, matrix);
         Placed::Recomposed
     }
