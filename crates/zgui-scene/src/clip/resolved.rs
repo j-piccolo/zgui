@@ -109,4 +109,7 @@ pub struct KeptClip {
     pub kept_aabb: [f32; 4],
     /// Bit `i` is set when `clip.rounded[i]` is measured in the kept system.
     pub kept_tests: u32,
+    /// The intersection of the links measured in the outer system, in its coordinates, or
+    /// unbounded when there is none. Only plain rectangles are measured there.
+    pub outer_aabb: [f32; 4],
 }

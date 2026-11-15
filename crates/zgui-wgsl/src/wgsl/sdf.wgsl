@@ -135,6 +135,12 @@ fn clip_coverage(point: vec2<f32>, clip_id: u32) -> f32 {
         if outside_bounds(kept, clips[clip_id].kept_aabb) {
             return 0.0;
         }
+        // The plain rectangles of a second system, moved back by its translation in the same way.
+        let outer = clips[clip_id].outer_space;
+        if outer != NO_SPACE
+            && outside_bounds(point - spatial[outer].matrix[3].xy, clips[clip_id].outer_aabb) {
+            return 0.0;
+        }
         let tests = clips[clip_id].kept_tests;
         first = select(point, kept, (tests & 1u) != 0u);
         second = select(point, kept, (tests & 2u) != 0u);

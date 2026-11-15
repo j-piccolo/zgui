@@ -135,7 +135,11 @@ struct Clip {
     kept_aabb: Bounds,
     // Bit 0 for `first`, bit 1 for `second`: set when the test is in the kept system.
     kept_tests: u32,
-    pad: u32,
+    // The slot of a second translating system the chain's plain rectangles are measured in, or
+    // NO_SPACE.
+    outer_space: u32,
+    // The intersection of those rectangles, in that system's coordinates.
+    outer_aabb: Bounds,
 }
 
 // What `Clip.space` holds when no link is kept in a coordinate system of its own.
