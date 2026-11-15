@@ -213,7 +213,8 @@ fn compose_into(
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &frame, &[globals]);
         pass.set_bind_group(1, &instances, &[]);
-        pass.draw(0..4, 0..scene.primitives.quads.len() as u32);
+        // A quad is a strip of ten vertices, as the renderer draws it.
+        pass.draw(0..10, 0..scene.primitives.quads.len() as u32);
     }
     gpu.queue().submit([encoder.finish()]);
     buffers.recall_uploads();

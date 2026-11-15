@@ -44,6 +44,51 @@ struct QuadVarying {
     @location(1) @interpolate(flat) instance: u32,
     // The quad's origin in that space.
     @location(2) @interpolate(flat) origin: vec2<f32>,
+    // The rest of the instance, read once per vertex rather than once per fragment: a storage
+    // read per fragment cost as much as rasterising the quad.
+    @location(3) @interpolate(flat) bounds: vec4<f32>,
+    @location(4) @interpolate(flat) radii_top: vec4<f32>,
+    @location(5) @interpolate(flat) radii_bottom: vec4<f32>,
+    @location(6) @interpolate(flat) border: vec4<f32>,
+    // Fill kind and index, stroke kind and index.
+    @location(7) @interpolate(flat) paints: vec4<u32>,
+    // Clip, style, transform, and the corner shape's bits.
+    @location(8) @interpolate(flat) misc: vec4<u32>,
+    @location(9) @interpolate(flat) paint_origin: vec2<f32>,
+    // Where on the device the clip certainly covers the whole pixel (min then max), so a
+    // fragment there reads no clip at all. Empty where that cannot be said once per instance.
+    @location(10) @interpolate(flat) clip_safe: vec4<f32>,
+}
+
+// The part of `safe` that is at least half a pixel inside `test` and clear of its corners.
+fn inside_rounded(safe: vec4<f32>, test: Rounded) -> vec4<f32> {
+    let r = test.radii;
+    let x = max(max(r.tl_x, r.tr_x), max(r.br_x, r.bl_x)) + 0.5;
+    let y = max(max(r.tl_y, r.tr_y), max(r.br_y, r.bl_y)) + 0.5;
+    let inner = vec4<f32>(
+        test.rect.x + x,
+        test.rect.y + y,
+        test.rect.x + test.rect.w - x,
+        test.rect.y + test.rect.h - y,
+    );
+    return vec4<f32>(max(safe.xy, inner.xy), min(safe.zw, inner.zw));
+}
+
+// Where the clip chain is certainly whole, on the device; empty when it moves with a space.
+fn clip_safe_rect(clip_id: u32) -> vec4<f32> {
+    if clips[clip_id].space != NO_SPACE {
+        return vec4<f32>(1.0, 1.0, 0.0, 0.0);
+    }
+    let aabb = clips[clip_id].aabb;
+    var safe = vec4<f32>(aabb.x, aabb.y, aabb.x + aabb.w, aabb.y + aabb.h);
+    let count = clips[clip_id].count;
+    if count > 0u {
+        safe = inside_rounded(safe, clips[clip_id].first);
+    }
+    if count > 1u {
+        safe = inside_rounded(safe, clips[clip_id].second);
+    }
+    return safe;
 }
 
 @vertex
@@ -55,13 +100,75 @@ fn vs_quad(
     let slot = packed & REMAP_SLOT_MASK;
     let shift = chunk_offsets[packed >> REMAP_OFFSET_SHIFT];
     let quad = quads[slot];
-    let local = inflated_corner(vertex, quad.bounds) + shift;
+    // Drawn as a ring, as a shadow is: a strip of ten vertices between the outer quad and an
+    // inner one. A box with no fill draws nothing inside its border, and the fragment stage drops
+    // those pixels, but a dropped pixel still costs its rasterisation: a panel's rim is a quad
+    // the size of the panel. So for an unfilled box the inner quad is the box inset by its widest
+    // border or corner, plus two pixels for the antialiased edge under a scale. A filled box, or
+    // one with no inside left, has a point there, and the ring covers the whole quad.
+    let outer_origin = bounds_origin(quad.bounds) - vec2<f32>(1.0);
+    let outer_size = bounds_size(quad.bounds) + vec2<f32>(2.0);
+    let around = (vertex >> 1u) % 4u;
+    // Clockwise from the top left, so consecutive pairs sweep the ring.
+    let unit = vec2<f32>(
+        select(0.0, 1.0, around == 1u || around == 2u),
+        select(0.0, 1.0, around >= 2u),
+    );
+    var point = outer_origin + unit * outer_size;
+    if (vertex & 1u) == 1u {
+        let r = quad.radii;
+        let b = quad.border;
+        let near = vec2<f32>(
+            max(b.left, max(r.tl_x, r.bl_x)),
+            max(b.top, max(r.tl_y, r.tr_y)),
+        ) + vec2<f32>(2.0);
+        let far = vec2<f32>(
+            max(b.right, max(r.tr_x, r.br_x)),
+            max(b.bottom, max(r.br_y, r.bl_y)),
+        ) + vec2<f32>(2.0);
+        let lo = bounds_origin(quad.bounds) + near;
+        let hi = bounds_origin(quad.bounds) + bounds_size(quad.bounds) - far;
+        if quad.fill.kind == PAINT_NONE && all(hi > lo) {
+            point = lo + unit * (hi - lo);
+        } else {
+            point = outer_origin + outer_size * 0.5;
+        }
+    }
+    let local = point + shift;
     var out: QuadVarying;
     out.position = to_clip_position(local, quad.transform);
-    out.local = inflated_offset(vertex, quad.bounds);
+    out.local = point - bounds_origin(quad.bounds);
     out.instance = slot;
     out.origin = bounds_origin(quad.bounds);
+    out.bounds = vec4<f32>(quad.bounds.x, quad.bounds.y, quad.bounds.w, quad.bounds.h);
+    out.radii_top = vec4<f32>(quad.radii.tl_x, quad.radii.tl_y, quad.radii.tr_x, quad.radii.tr_y);
+    out.radii_bottom = vec4<f32>(quad.radii.br_x, quad.radii.br_y, quad.radii.bl_x, quad.radii.bl_y);
+    out.border = vec4<f32>(quad.border.top, quad.border.right, quad.border.bottom, quad.border.left);
+    out.paints = vec4<u32>(quad.fill.kind, quad.fill.index, quad.stroke.kind, quad.stroke.index);
+    out.misc = vec4<u32>(quad.clip, quad.style, quad.transform, bitcast<u32>(quad.shape));
+    out.paint_origin = vec2<f32>(quad.paint_origin.x, quad.paint_origin.y);
+    out.clip_safe = clip_safe_rect(quad.clip);
     return out;
+}
+
+// The instance as the vertex stage passed it on.
+fn quad_of(in: QuadVarying) -> Quad {
+    return Quad(
+        0u,
+        in.misc.y,
+        Bounds(in.bounds.x, in.bounds.y, in.bounds.z, in.bounds.w),
+        Radii(
+            in.radii_top.x, in.radii_top.y, in.radii_top.z, in.radii_top.w,
+            in.radii_bottom.x, in.radii_bottom.y, in.radii_bottom.z, in.radii_bottom.w,
+        ),
+        Edges(in.border.x, in.border.y, in.border.z, in.border.w),
+        PaintRef(in.paints.x, in.paints.y),
+        PaintRef(in.paints.z, in.paints.w),
+        in.misc.x,
+        in.misc.z,
+        bitcast<f32>(in.misc.w),
+        Vector2(in.paint_origin.x, in.paint_origin.y),
+    );
 }
 
 @fragment
@@ -69,7 +176,7 @@ fn fs_quad(in: QuadVarying) -> @location(0) vec4<f32> {
     // How long one device pixel is in the primitive's own space. Read before any branch, because
     // a derivative is only defined where every fragment of the quad takes it.
     let unit = max(max(fwidth(in.local).x, fwidth(in.local).y), 1e-6);
-    let quad = quads[in.instance];
+    let quad = quad_of(in);
     // A box with no fill draws nothing inside its border: a panel's rim, a card's stroke. Its quad
     // still covers the whole box, so those pixels are dropped here, on the geometry alone, before
     // the clip and the paints are read. Only the straight inside is: near a rounded corner the
@@ -91,9 +198,13 @@ fn fs_quad(in: QuadVarying) -> @location(0) vec4<f32> {
     }
     // The clip is in device space, so it is evaluated at the real pixel; the shape is in the
     // primitive's own space, so it is evaluated at the point that maps to this pixel.
-    let clip = clip_coverage(device_position(in.position.xy), quad.clip);
-    if clip <= 0.0 {
-        return vec4<f32>(0.0);
+    let device = device_position(in.position.xy);
+    var clip = 1.0;
+    if any(device < in.clip_safe.xy) || any(device > in.clip_safe.zw) {
+        clip = clip_coverage(device, quad.clip);
+        if clip <= 0.0 {
+            return vec4<f32>(0.0);
+        }
     }
     let point = in.origin + in.local;
     let paint_origin = vec2<f32>(quad.paint_origin.x, quad.paint_origin.y);

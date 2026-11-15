@@ -454,8 +454,9 @@ impl Recorder<'_> {
         if let Some(bind_group) = atlas {
             pass.set_bind_group(2, bind_group, &[]);
         }
-        // A shadow is a ring of ten strip vertices around the core of its box. Other kinds are quads.
-        let vertices = if kind == PipelineKind::Shadow {
+        // A shadow is a ring of ten strip vertices around the core of its box, and so is a quad,
+        // around the inside of an unfilled one. Other kinds are quads.
+        let vertices = if matches!(kind, PipelineKind::Shadow | PipelineKind::Quad) {
             0..10
         } else {
             0..4
