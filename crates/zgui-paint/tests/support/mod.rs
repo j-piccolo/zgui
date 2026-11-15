@@ -456,6 +456,18 @@ impl Harness {
         self.paint()
     }
 
+    /// Emits a frame with the whole surface damaged, reporting the chunk each encoded fragment
+    /// was given.
+    pub(crate) fn paint_reporting_chunks(&mut self) -> zgui_paint::PaintReport {
+        self.damage = DamageSet::full();
+        self.scene.begin_frame(self.viewport);
+        let mut input = PaintInput::new(&self.store, &self.damage);
+        input.record_chunks = true;
+        let report = self.painter.emit(&input, &mut self.scene);
+        self.scene.finish(&self.damage);
+        report
+    }
+
     /// Forgets the damage, which is what the start of a frame does.
     pub(crate) fn clear_damage(&mut self) {
         self.damage = DamageSet::new();

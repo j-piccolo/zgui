@@ -77,7 +77,7 @@ pub use crate::lower::anim::{AnimOverrides, NoAnim, OwnedPaints};
 pub use crate::lower::cache::{PaintStyleCache, PaintStyleRef};
 pub use crate::lower::key::LoweringKey;
 pub use crate::lower::{PaintStyle, lower};
-pub use crate::walk::{PaintInput, PaintReport, Painter, VectorRouteReport};
+pub use crate::walk::{ChunkReport, PaintInput, PaintReport, Painter, VectorRouteReport};
 /// The sprite primitives glyphs are drawn as, and the brush slot a run names, from the scene
 /// vocabulary.
 pub use zgui_scene::{ColorSprite, MonoSprite, PaintSlot, SubpixelSprite};

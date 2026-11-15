@@ -217,7 +217,7 @@ impl Recorder<'_> {
             pass.ink = plan
                 .ink
                 .get(planned.draws.start + offset)
-                .copied()
+                .cloned()
                 .flatten();
             let issued = self.issue(&mut pass, planned, tables.as_ref(), draw, format);
             if issued {
@@ -796,11 +796,12 @@ impl<'pass> BoundPass<'pass> {
                 TargetRef::MarksPage(_) => "marks",
             };
             let scissor = rect_note(self.scissor);
-            match self.ink {
+            match &self.ink {
                 Some(ink) => format!(
-                    "fs={fs} n={count} target={target} scissor={scissor} px={} box={}",
+                    "fs={fs} n={count} target={target} scissor={scissor} px={} box={} owners={}",
                     ink.pixels,
-                    rect_note(ink.covered)
+                    rect_note(ink.covered),
+                    owners_note(&ink.owners)
                 ),
                 // A full-target quad (a clear, a composite, a filter) covers the scissor.
                 None if matches!(self.pipeline, Some(Bound::Kind(PipelineKind::DamageClear))) => {
@@ -823,6 +824,18 @@ pub(crate) fn rect_note(rect: Rect<i32, Device>) -> String {
         "{},{},{},{}",
         rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
     )
+}
+
+/// The chunk revisions a draw covers and the pixels of each, as `rev:px,rev:px`.
+fn owners_note(owners: &[(u64, u64)]) -> String {
+    let mut note = String::new();
+    for (revision, pixels) in owners {
+        if !note.is_empty() {
+            note.push(',');
+        }
+        note.push_str(&format!("{revision}:{pixels}"));
+    }
+    note
 }
 
 /// The kind of work a pass into `target` is timed as.

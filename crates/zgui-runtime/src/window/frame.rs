@@ -1658,6 +1658,9 @@ impl Window {
                 scrollbars: zgui_paint::emit::scrollbar::paint_for(
                     self.scheme == zgui_style::ColorScheme::Dark,
                 ),
+                // Named in the latency trace, so the renderer's per-draw notes can be put on the
+                // elements that drew them.
+                record_chunks: zgui_profile::latency::listening(),
                 ..PaintInput::new(&layout, &self.damage)
             };
             zgui_profile::latency::note_with("d.postexpand", || {
@@ -1672,6 +1675,7 @@ impl Window {
             mark("p.emit");
             let before = glyph_counts();
             let report = self.painter.emit(&input, &mut self.scene);
+            crate::window::owners::note(&document, &report.chunks);
             vector_report = report.vector_routes;
             self.layers_owed = report.layers_owed;
             let after = glyph_counts();
