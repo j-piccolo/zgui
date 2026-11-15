@@ -710,13 +710,21 @@ fn upload_dirty<T: Pod>(
     dirty: &DirtySlots,
 ) -> u64 {
     const MAX_RANGES: usize = 16;
+    // Below this many bytes, one copy of the whole table costs less than several of its ranges:
+    // a copy is recorded and tracked as a command whatever its size.
+    const SMALL_TABLE: usize = 16 * 1024;
     let ranges = dirty
         .slots
         .windows(2)
         .filter(|pair| pair[1] != pair[0] + 1)
         .count()
         + usize::from(!dirty.slots.is_empty());
-    if dirty.all || dirty.slots.len().saturating_mul(2) >= values.len() || ranges > MAX_RANGES {
+    let small = ranges > 1 && size_of_val(values) <= SMALL_TABLE;
+    if dirty.all
+        || small
+        || dirty.slots.len().saturating_mul(2) >= values.len()
+        || ranges > MAX_RANGES
+    {
         return buffer.upload(gpu, belt, encoder, values);
     }
     let mut uploaded = 0;
