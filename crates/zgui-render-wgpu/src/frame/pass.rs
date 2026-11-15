@@ -86,14 +86,28 @@ impl Recorder<'_> {
         segments: &[Segment],
     ) -> Recorded {
         let mut recorded = Recorded::default();
-        for segment in segments {
-            match segment {
+        let mut index = 0;
+        while index < segments.len() {
+            match &segments[index] {
                 Segment::Encoder(op) => self.run(encoder, *op),
-                Segment::Pass(pass) => {
-                    self.record_pass(encoder, plan, pass, &mut recorded);
+                Segment::Pass(first) => {
+                    // Passes into one target that keep what it holds are one render pass with a
+                    // scissor per rectangle: opening a pass costs more than its draws. Timed passes
+                    // stay apart, because each one is measured on its own.
+                    let mut run = vec![first];
+                    while let Some(Segment::Pass(next)) = segments.get(index + run.len())
+                        && self.timer.is_none()
+                        && next.target == first.target
+                        && next.load == PassLoad::Keep
+                    {
+                        run.push(next);
+                    }
+                    index += run.len() - 1;
+                    self.record_passes(encoder, plan, &run, &mut recorded);
                 }
                 Segment::Round(_) => {}
             }
+            index += 1;
         }
         counter::add(Counter::DrawCalls, u64::from(recorded.draw_calls));
         if recorded.dropped > 0 {
@@ -149,28 +163,37 @@ impl Recorder<'_> {
         }
     }
 
-    /// Opens one pass and issues its draws.
-    fn record_pass(
+    /// Opens one pass on the run's target and issues each planned pass's draws under its own
+    /// scissor. Every pass after the first in a run keeps what the target holds.
+    fn record_passes(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         plan: &FramePlan,
-        planned: &PlannedPass,
+        run: &[&PlannedPass],
         recorded: &mut Recorded,
     ) {
-        let Some(format) = self.format(planned.target) else {
+        // The pass opens with the first planned pass that touches anything, as a lone pass would.
+        let Some(at) = run.iter().position(|planned| {
+            let extent = self.extent(planned.target);
+            !scaled(planned.scissor, planned.target, extent).is_empty()
+        }) else {
             return;
         };
-        let extent = self.extent(planned.target);
-        let scissor = scaled(planned.scissor, planned.target, extent);
-        if scissor.is_empty() || self.view(planned.target).is_none() {
+        let run = &run[at..];
+        let opening = run[0];
+        let Some(format) = self.format(opening.target) else {
+            return;
+        };
+        let extent = self.extent(opening.target);
+        if self.view(opening.target).is_none() {
             return;
         }
         // Taken only for a pass that opens, because a query nothing writes would resolve to noise.
         let queries = self
             .timer
             .as_deref_mut()
-            .and_then(|timer| timer.pass(timed_work(planned.target)));
-        let Some(view) = self.view(planned.target) else {
+            .and_then(|timer| timer.pass(timed_work(opening.target)));
+        let Some(view) = self.view(opening.target) else {
             return;
         };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -180,7 +203,7 @@ impl Recorder<'_> {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: match planned.load {
+                    load: match opening.load {
                         PassLoad::Keep => wgpu::LoadOp::Load,
                         PassLoad::Discard => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                     },
@@ -203,27 +226,34 @@ impl Recorder<'_> {
             0.0,
             1.0,
         );
-        pass.set_scissor_rect(
-            scissor.origin.x.max(0) as u32,
-            scissor.origin.y.max(0) as u32,
-            scissor.size.width.max(0) as u32,
-            scissor.size.height.max(0) as u32,
-        );
-        let mut pass = BoundPass::new(pass, planned.target, planned.scissor);
+        let mut pass = BoundPass::new(pass, opening.target, opening.scissor);
         let tables = self
             .buffers
             .frame_bind_group(self.gpu, self.pipelines.layouts());
-        for (offset, draw) in plan.draws_of(planned).iter().enumerate() {
-            pass.ink = plan
-                .ink
-                .get(planned.draws.start + offset)
-                .cloned()
-                .flatten();
-            let issued = self.issue(&mut pass, planned, tables.as_ref(), draw, format);
-            if issued {
-                recorded.draw_calls += 1;
-            } else {
-                recorded.dropped += 1;
+        for planned in run {
+            let scissor = scaled(planned.scissor, planned.target, extent);
+            if scissor.is_empty() {
+                continue;
+            }
+            pass.pass.set_scissor_rect(
+                scissor.origin.x.max(0) as u32,
+                scissor.origin.y.max(0) as u32,
+                scissor.size.width.max(0) as u32,
+                scissor.size.height.max(0) as u32,
+            );
+            pass.scissor = planned.scissor;
+            for (offset, draw) in plan.draws_of(planned).iter().enumerate() {
+                pass.ink = plan
+                    .ink
+                    .get(planned.draws.start + offset)
+                    .cloned()
+                    .flatten();
+                let issued = self.issue(&mut pass, planned, tables.as_ref(), draw, format);
+                if issued {
+                    recorded.draw_calls += 1;
+                } else {
+                    recorded.dropped += 1;
+                }
             }
         }
     }
