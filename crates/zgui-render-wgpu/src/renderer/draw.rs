@@ -24,6 +24,8 @@ impl Renderer for WgpuRenderer {
     }
 
     fn configure(&mut self, target: RenderTarget) {
+        // A texture of the old swap chain must not outlive the reconfiguration.
+        self.staged = None;
         self.history.forget();
         // A change of scale or of opacity changes what every composed pixel means, and moves no
         // allocation that would otherwise say so. A change of size alone keeps the composed target
@@ -111,6 +113,7 @@ impl Renderer for WgpuRenderer {
         // Nothing is stalled by doing it early: the wait a rebuild costs is a wait for work still in
         // flight, and a surface that has never been configured, or has stopped being, has none.
         if !self.presentation.is_configured() {
+            self.staged = None;
             self.presentation.apply_pending(&self.gpu);
         }
         // The one early exit that keeps its damage, because it records nothing.
@@ -328,8 +331,9 @@ impl Renderer for WgpuRenderer {
         // either way, so its damage retires; the copy to the surface waits for `present_held`.
         self.held = self.present_gate.as_ref().is_some_and(|gate| !gate());
         if self.held {
-            // The surface texture is acquired in `present_held`. An acquisition here, at the end
-            // of a held frame, made the composed target keep stale pixels of moved elements.
+            if self.staged.is_none() {
+                self.staged = Some(self.acquire_surface());
+            }
             self.submit_frame(encoder);
             zgui_profile::latency::mark("sub.held");
             self.present_composed_next = true;
@@ -338,7 +342,10 @@ impl Renderer for WgpuRenderer {
             return FrameOutcome::Skipped(SkipReason::Held);
         }
 
-        let presented = self.acquire_surface();
+        let presented = match self.staged.take() {
+            Some(staged) => staged,
+            None => self.acquire_surface(),
+        };
         let mut draw_calls = recorded.draw_calls;
         if let Some(view) = &presented.view {
             let limit = self.blit_limit(&presented);
@@ -370,7 +377,31 @@ impl Renderer for WgpuRenderer {
         // nothing worth presenting. The next frame draws again, and presents what it draws.
         if self.full_damage_next || !self.presentation.is_configured() || self.gpu.loss().is_lost()
         {
+            self.staged = None;
             return FrameOutcome::Skipped(SkipReason::Unacquired);
+        }
+        if let Some(staged) = self.staged.take() {
+            let draw_calls = u32::from(staged.view.is_some());
+            if let Some(view) = &staged.view {
+                let mut encoder = self.frame_encoder();
+                let limit = self.blit_limit(&staged);
+                let image = image_of(&staged);
+                self.blit(
+                    &mut encoder,
+                    view,
+                    self.presentation.formats().blit_undoes_srgb(),
+                    limit,
+                    image,
+                );
+                self.gpu.queue().submit([encoder.finish()]);
+            }
+            let acquisition = staged.acquisition;
+            self.hand_over(staged);
+            return acquisition.outcome(FrameStats {
+                draw_calls,
+                memory: self.memory(),
+                ..FrameStats::default()
+            });
         }
         let formats = self.presentation.formats();
         let presented = self.acquire_surface();
