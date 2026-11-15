@@ -162,12 +162,6 @@ pub struct WgpuRenderer {
     present_gate: Option<PresentGate>,
     /// Whether the composed target holds a frame the gate held back.
     held: bool,
-    /// The surface texture acquired for a held frame, presented when the gate opens.
-    ///
-    /// The gate opens on the compositor's frame callback, while the compositor's composite is on
-    /// the device. An acquisition at that moment waits for the composite. An acquisition at the end
-    /// of the draw comes after it, so opening the gate costs only the copy and the present.
-    staged: Option<crate::target::swapchain::Presented>,
     /// How long the last frame waited to be handed a surface to present into.
     acquire_block: std::time::Duration,
     /// How many times *this* surface's acquisition has failed validation in a row.
@@ -276,7 +270,6 @@ impl WgpuRenderer {
             pre_present,
             present_gate: None,
             held: false,
-            staged: None,
             acquire_block: std::time::Duration::ZERO,
             consecutive_validation_failures: 0,
             origin,
