@@ -6601,6 +6601,7 @@ dependencies = [
  "zgui-geom",
  "zgui-interned",
  "zgui-paint",
+ "zgui-profile",
  "zgui-reactive",
  "zgui-render",
  "zgui-scene",

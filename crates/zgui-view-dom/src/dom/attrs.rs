@@ -11,8 +11,27 @@ use zgui_vocab::{EventKind, ListenerOptions, PropKey, PropValue, Semantics, UiSt
 
 use crate::dom::DocumentDom;
 
+impl DocumentDom {
+    /// Notes a view's write to the document as `<stage> el=<element> <what>`, while per-element
+    /// marks are on (`ZGUI_LATENCY_ELEMENTS`): which element, and what of it, a frame's restyle
+    /// and relayout came from. Off, it costs one relaxed load.
+    fn note_write(&self, stage: &'static str, el: NodeId, what: impl FnOnce() -> String) {
+        if !zgui_profile::latency::tracing_elements() {
+            return;
+        }
+        let Some(index) = self.live_index_of(el) else {
+            return;
+        };
+        let name = zgui_dom::describe::path(&self.document(), index, 1);
+        zgui_profile::latency::note(stage, format!("el={name} {}", what()));
+    }
+}
+
 impl Dom for DocumentDom {
     fn create_element(&self, name: ElementName) -> NodeId {
+        if zgui_profile::latency::tracing_elements() {
+            zgui_profile::latency::note("dom.create", format!("el={name}"));
+        }
         self.create(NodeKind::Element, name)
     }
 
@@ -30,6 +49,7 @@ impl Dom for DocumentDom {
 
     fn set_text(&self, node: NodeId, data: &str) {
         self.write_text(node, data);
+        self.note_write("dom.text", node, String::new);
     }
 
     fn text_is(&self, node: NodeId, data: &str) -> bool {
@@ -41,6 +61,8 @@ impl Dom for DocumentDom {
     }
 
     fn detach(&self, node: NodeId) {
+        // Named before it goes: after, it has no parent to name it by.
+        self.note_write("dom.detach", node, String::new);
         self.unlink(node);
     }
 
@@ -61,6 +83,7 @@ impl Dom for DocumentDom {
     // a child under a parent that is gone is not a late echo of anything, it is a bug worth
     // hearing about where it happened.
     fn set_attribute(&self, el: NodeId, name: AttrName, value: Option<&str>) {
+        self.note_write("dom.attr", el, || format!("name={name}"));
         let Some(el) = self.live_index_of(el) else {
             return;
         };
@@ -70,13 +93,16 @@ impl Dom for DocumentDom {
     }
 
     fn set_classes(&self, el: NodeId, classes: &[ClassName]) {
+        let node = el;
         let Some(el) = self.live_index_of(el) else {
             return;
         };
         self.edit(|edit| edit.set_classes(el, classes));
+        self.note_write("dom.class", node, || format!("set={}", classes.len()));
     }
 
     fn toggle_class(&self, el: NodeId, class: ClassName, on: bool) {
+        self.note_write("dom.class", el, || format!("class={class} on={on}"));
         let Some(el) = self.live_index_of(el) else {
             return;
         };
@@ -100,8 +126,12 @@ impl Dom for DocumentDom {
         let Some(index) = self.live_index_of(el) else {
             return;
         };
-        let applied = self.edit(|edit| edit.set_style_property(index, property, value));
-        if !applied {
+        let wrote = self.edit(|edit| edit.write_style_property(index, property, value));
+        // `changed=false` is a binding re-stating what the element already said: no style work.
+        self.note_write("dom.style", el, || {
+            format!("prop={property} changed={}", wrote.unwrap_or(false))
+        });
+        if wrote.is_none() {
             tracing::warn!(
                 property,
                 value,
@@ -115,6 +145,7 @@ impl Dom for DocumentDom {
             return;
         };
         let applied = self.edit(|edit| edit.set_custom_property(index, property, value));
+        self.note_write("dom.var", el, || format!("prop={}", property.as_str()));
         if !applied {
             tracing::warn!(
                 property = property.as_str(),
@@ -125,6 +156,7 @@ impl Dom for DocumentDom {
     }
 
     fn set_ui_state(&self, el: NodeId, state: UiState, on: bool) {
+        self.note_write("dom.state", el, || format!("state={state:?} on={on}"));
         let Some(el) = self.live_index_of(el) else {
             return;
         };

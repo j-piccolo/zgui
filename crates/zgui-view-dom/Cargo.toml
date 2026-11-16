@@ -19,6 +19,7 @@ include.workspace = true
 [dependencies]
 zgui-dom = { path = "../zgui-dom", version = "0.1.0" }
 zgui-interned = { path = "../zgui-interned", version = "0.1.0" }
+zgui-profile = { path = "../zgui-profile", version = "0.1.0" }
 zgui-view = { path = "../zgui-view", version = "0.1.0" }
 zgui-vocab = { path = "../zgui-vocab", version = "0.1.0" }
 
