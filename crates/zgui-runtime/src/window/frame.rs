@@ -1549,7 +1549,11 @@ impl Window {
             // moving pixels the renderer already has replaces the whole port with the bands the
             // move leaves undefined, and everything the frame damaged for any *other* reason is
             // kept and drawn over them.
-            shift = self.scroll_shift(viewport).ok();
+            let shifted = self.scroll_shift(viewport);
+            // Why not, for the trace: a list that never shifts is a different bug from one that
+            // shifts, and the refusal says whose.
+            let refused = shifted.as_ref().err().copied();
+            shift = shifted.ok();
             if let Some(shift) = shift {
                 // Everything this frame owes that the copy does not answer: what it owed before
                 // any layout pass, what the passes damaged beyond their movement, what the stages
@@ -1572,7 +1576,7 @@ impl Window {
                 .clip_to(zgui_geom::Rect::new(zgui_geom::Point::new(0, 0), viewport));
             zgui_profile::latency::note_with("d.postshift", || {
                 format!(
-                    "by={:?} inherited={:?} beyond={:?} after={:?}",
+                    "by={:?} refused={refused:?} inherited={:?} beyond={:?} after={:?}",
                     shift.map(|s| s.by),
                     self.damage_before_layout.rects(),
                     self.rigid_moves.beyond.rects(),
