@@ -92,11 +92,11 @@ impl Recorder<'_> {
                 Segment::Encoder(op) => self.run(encoder, *op),
                 Segment::Pass(first) => {
                     // Passes into one target that keep what it holds are one render pass with a
-                    // scissor per rectangle: opening a pass costs more than its draws. Timed passes
-                    // stay apart, because each one is measured on its own.
+                    // scissor per rectangle: opening a pass costs more than its draws. A timed frame
+                    // merges them too, and times the merged pass as one: kept apart, they made a
+                    // timed run measure more passes than the frame it stood for.
                     let mut run = vec![first];
                     while let Some(Segment::Pass(next)) = segments.get(index + run.len())
-                        && self.timer.is_none()
                         && next.target == first.target
                         && next.load == PassLoad::Keep
                     {
