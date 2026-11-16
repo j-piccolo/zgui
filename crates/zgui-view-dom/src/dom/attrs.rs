@@ -23,7 +23,11 @@ impl DocumentDom {
             return;
         };
         let name = zgui_dom::describe::path(&self.document(), index, 1);
-        zgui_profile::latency::note(stage, format!("el={name} {}", what()));
+        // The closure whose binding wrote, when a binding did (zgui_view::binding::origin).
+        let by = zgui_view::binding::origin::current()
+            .map(|origin| format!(" by={origin}"))
+            .unwrap_or_default();
+        zgui_profile::latency::note(stage, format!("el={name} {}{by}", what()));
     }
 }
 

@@ -40,11 +40,14 @@ impl Binding {
             }
             ReactiveValue::Dynamic(compute) => {
                 let mut previous: Option<T> = None;
+                // Whose closure this is, for the trace's note of each write (`origin`).
+                let origin =
+                    super::origin::take(std::rc::Rc::as_ptr(&compute).cast::<()>() as usize);
                 let sink = cx.with_owner(|| {
                     Sink::new(move || {
                         let next = compute();
                         if previous.as_ref() != Some(&next) {
-                            write(&next);
+                            super::origin::writing(origin, || write(&next));
                         }
                         previous = Some(next);
                     })
