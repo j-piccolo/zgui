@@ -40,6 +40,11 @@ pub(crate) fn note_groups(document: &Document, whys: &[zgui_paint::GroupWhy]) {
     }
 }
 
+/// The element `node` as a selector, after its nearest element ancestors, for a trace note.
+pub(crate) fn name(document: &Document, node: NodeKey) -> String {
+    path(document, node)
+}
+
 /// The element `node` as a selector, after its nearest element ancestors: `a.card > img.poster`.
 fn path(document: &Document, node: NodeKey) -> String {
     let store = document.store();

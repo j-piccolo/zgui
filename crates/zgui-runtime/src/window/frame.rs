@@ -1553,7 +1553,11 @@ impl Window {
             // Why not, for the trace: a list that never shifts is a different bug from one that
             // shifts, and the refusal says whose.
             let refused = shifted.as_ref().err().copied();
-            shift = shifted.ok();
+            let (moved, whole, beside) = match shifted {
+                Ok(shifted) => (Some(shifted.moved), Some(shifted.port), shifted.beside),
+                Err(_) => (None, None, Vec::new()),
+            };
+            shift = moved;
             if let Some(shift) = shift {
                 // Everything this frame owes that the copy does not answer: what it owed before
                 // any layout pass, what the passes damaged beyond their movement, what the stages
@@ -1571,12 +1575,28 @@ impl Window {
                 self.damage.absorb_set(&self.rigid_moves.beyond);
                 self.damage.absorb_set(&self.damage_after_layout);
                 shift.expose_into(&mut self.damage);
+                // The bands what does not scroll is drawn in were not moved: drawn again, whole.
+                for &band in &beside {
+                    self.damage.absorb(band);
+                }
+                if let Some(whole) = whole {
+                    self.damage = super::scroll::shift::across(&self.damage, whole, shift.by);
+                }
             }
             self.damage
                 .clip_to(zgui_geom::Rect::new(zgui_geom::Point::new(0, 0), viewport));
             zgui_profile::latency::note_with("d.postshift", || {
+                // The element a document refusal names, as a selector.
+                let by = refused
+                    .and_then(super::scroll::shift::Refused::element)
+                    .and_then(|node| {
+                        let document = self.document.try_borrow().ok()?;
+                        Some(crate::window::owners::name(&document, node))
+                    })
+                    .unwrap_or_default();
                 format!(
-                    "by={:?} refused={refused:?} inherited={:?} beyond={:?} after={:?}",
+                    "by={:?} beside={beside:?} refused={refused:?} {by} inherited={:?} beyond={:?} \
+                     after={:?}",
                     shift.map(|s| s.by),
                     self.damage_before_layout.rects(),
                     self.rigid_moves.beyond.rects(),

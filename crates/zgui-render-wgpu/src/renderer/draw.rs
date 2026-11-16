@@ -257,7 +257,35 @@ impl Renderer for WgpuRenderer {
         // Before anything this frame draws, and after nothing: the passes below clear and redraw
         // each damage rectangle, and the pixels this moves are the ones outside them.
         let mut shifted = None;
-        if let Some(shift) = self.pending_shift.take() {
+        let pending = self.pending_shift.take();
+        // Two ways to move the pixels: the moved area copied out to a scratch and back (twice
+        // the port), or once into a spare whole target with the rest of the surface copied
+        // beside it (the surface). A list filling its window takes the spare; one in a tall
+        // panel, the scratch.
+        let area = |rect: zgui_geom::Rect<i32, zgui_geom::Device>| {
+            i64::from(rect.size.width.max(0)) * i64::from(rect.size.height.max(0))
+        };
+        let through_scratch = pending.is_some_and(|shift| {
+            shift
+                .source()
+                .is_some_and(|moved| 2 * area(moved) < area(self.composed.used()))
+        });
+        if let Some(shift) = pending.filter(|_| through_scratch) {
+            let moved = crate::frame::shift::apply(
+                &self.gpu,
+                &mut encoder,
+                &self.composed,
+                &mut self.shift_scratch,
+                shift,
+            );
+            if moved {
+                shifted = Some(shift.port);
+            }
+            zgui_profile::latency::note(
+                "r.shift",
+                format!("by={:?} moved={moved} via=scratch", shift.by),
+            );
+        } else if let Some(shift) = pending {
             let fits = self.spare.as_ref().is_some_and(|(spare, _)| {
                 spare.allocated() == self.composed.allocated()
                     && spare.format() == self.composed.format()
@@ -280,7 +308,10 @@ impl Renderer for WgpuRenderer {
                 core::mem::swap(&mut self.composed, spare);
                 core::mem::swap(&mut self.composed_binding, binding);
             }
-            zgui_profile::latency::note("r.shift", format!("by={:?} moved={moved}", shift.by));
+            zgui_profile::latency::note(
+                "r.shift",
+                format!("by={:?} moved={moved} via=spare", shift.by),
+            );
         }
         zgui_profile::latency::mark("r.buffers");
         let uploaded = self.buffers.upload_frame(&self.gpu, &mut encoder, scene);
