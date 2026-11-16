@@ -64,6 +64,8 @@ pub(crate) struct Shift {
     /// The rest of the port, at most a band along each edge. What does not scroll is drawn there,
     /// so its pixels are owed as damage rather than moved.
     pub(crate) beside: Vec<Rect<i32, Device>>,
+    /// What does not scroll in the port, for the trace: the element and its ink.
+    pub(crate) apart: Vec<(Option<zgui_dom::NodeKey>, Rect<i32, Device>)>,
 }
 
 /// The largest part of `port` clear of every rectangle in `apart`, and the bands around it.
@@ -270,12 +272,23 @@ impl Window {
             shiftable.apart.first().and_then(|apart| apart.by),
         ));
         let whole = port;
+        // Only for a trace: an untraced frame allocates nothing for it.
+        let apart = if zgui_profile::latency::listening() {
+            shiftable
+                .apart
+                .iter()
+                .map(|apart| (apart.by, pixels(apart.ink)))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let (port, beside) =
             clear_of(port, shiftable.apart.iter().map(|apart| pixels(apart.ink))).ok_or(refused)?;
         Ok(Shift {
             moved: ScrollShift { port, by },
             port: whole,
             beside,
+            apart,
         })
     }
 }

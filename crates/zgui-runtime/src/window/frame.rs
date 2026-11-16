@@ -1555,9 +1555,14 @@ impl Window {
             // Why not, for the trace: a list that never shifts is a different bug from one that
             // shifts, and the refusal says whose.
             let refused = shifted.as_ref().err().copied();
-            let (moved, whole, beside) = match shifted {
-                Ok(shifted) => (Some(shifted.moved), Some(shifted.port), shifted.beside),
-                Err(_) => (None, None, Vec::new()),
+            let (moved, whole, beside, apart) = match shifted {
+                Ok(shifted) => (
+                    Some(shifted.moved),
+                    Some(shifted.port),
+                    shifted.beside,
+                    shifted.apart,
+                ),
+                Err(_) => (None, None, Vec::new(), Vec::new()),
             };
             shift = moved;
             if let Some(shift) = shift {
@@ -1596,9 +1601,30 @@ impl Window {
                         Some(crate::window::owners::name(&document, node))
                     })
                     .unwrap_or_default();
+                // What the shift moved around, by element: the bands beside the moved part are
+                // theirs.
+                let apart = self
+                    .document
+                    .try_borrow()
+                    .map(|document| {
+                        apart
+                            .iter()
+                            .map(|(node, ink)| {
+                                let name = node
+                                    .map(|node| crate::window::owners::name(&document, node))
+                                    .unwrap_or_default();
+                                format!(
+                                    "{name} @ {},{},{},{}",
+                                    ink.origin.x, ink.origin.y, ink.size.width, ink.size.height
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    })
+                    .unwrap_or_default();
                 format!(
-                    "by={:?} beside={beside:?} refused={refused:?} {by} inherited={:?} beyond={:?} \
-                     after={:?}",
+                    "by={:?} beside={beside:?} refused={refused:?} {by} apart=[{apart}] \
+                     inherited={:?} beyond={:?} after={:?}",
                     shift.map(|s| s.by),
                     self.damage_before_layout.rects(),
                     self.rigid_moves.beyond.rects(),
