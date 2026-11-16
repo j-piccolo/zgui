@@ -1722,6 +1722,12 @@ impl Window {
                     self.damage.rects()
                 )
             });
+            // After the damage grew: what the frame draws again, against what its shift moved.
+            if let (Some(moved), Some(whole)) = (shift, whole) {
+                zgui_profile::latency::note_with("shift.acct", || {
+                    super::scroll::shift::account(&self.damage, whole, moved.port)
+                });
+            }
             mark("p.emit");
             let before = glyph_counts();
             let report = self.painter.emit(&input, &mut self.scene);
