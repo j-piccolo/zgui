@@ -69,6 +69,7 @@
 #![allow(unsafe_code)]
 
 pub mod arena;
+pub mod describe;
 pub mod dirty;
 pub mod host;
 pub mod id;
