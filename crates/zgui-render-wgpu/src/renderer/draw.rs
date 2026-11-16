@@ -249,6 +249,9 @@ impl Renderer for WgpuRenderer {
         };
         zgui_profile::latency::mark("r.encoder");
         let mut encoder = self.frame_encoder();
+        if let Some(timer) = &mut self.timer {
+            timer.open_span(&mut encoder);
+        }
         // First of all: a target reallocated by a resize receives the picture of the one it
         // replaced, which the shift below and every pass after it build on.
         if let Some(carried) = self.composed.carry(&mut encoder) {
@@ -269,6 +272,11 @@ impl Renderer for WgpuRenderer {
             shift
                 .source()
                 .is_some_and(|moved| 2 * area(moved) < area(self.composed.used()))
+        });
+        let shift_timed = pending.and_then(|_| {
+            self.timer
+                .as_mut()
+                .and_then(|timer| timer.open(&mut encoder, TimedWork::Shift))
         });
         if let Some(shift) = pending.filter(|_| through_scratch) {
             let moved = crate::frame::shift::apply(
@@ -313,8 +321,18 @@ impl Renderer for WgpuRenderer {
                 format!("by={:?} moved={moved} via=spare", shift.by),
             );
         }
+        if let Some(queries) = shift_timed {
+            queries.close(&mut encoder);
+        }
         zgui_profile::latency::mark("r.buffers");
+        let uploads_timed = self
+            .timer
+            .as_mut()
+            .and_then(|timer| timer.open(&mut encoder, TimedWork::Uploads));
         let uploaded = self.buffers.upload_frame(&self.gpu, &mut encoder, scene);
+        if let Some(queries) = uploads_timed {
+            queries.close(&mut encoder);
+        }
         let upload_allocations = self.buffers.upload_allocations();
         self.buffers.finish_uploads();
         if upload_allocations == 0 {

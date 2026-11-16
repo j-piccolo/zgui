@@ -193,6 +193,22 @@ impl Recorder<'_> {
             .timer
             .as_deref_mut()
             .and_then(|timer| timer.pass(timed_work(opening.target)));
+        // Each damage rectangle's own queries, with `ZGUI_GPU_TIMING=rects`, taken before the pass
+        // borrows the targets, for the rectangles the loop below draws.
+        let rect_queries: Vec<Option<crate::gpu::timing::PassQueries>> = run
+            .iter()
+            .map(|planned| {
+                let scissor = scaled(planned.scissor, planned.target, extent);
+                if scissor.is_empty() {
+                    return None;
+                }
+                let at = planned.scissor;
+                let bounds = [at.origin.x, at.origin.y, at.size.width, at.size.height];
+                self.timer
+                    .as_deref_mut()
+                    .and_then(|timer| timer.rect(timed_work(opening.target), bounds))
+            })
+            .collect();
         let Some(view) = self.view(opening.target) else {
             return;
         };
@@ -230,10 +246,13 @@ impl Recorder<'_> {
         let tables = self
             .buffers
             .frame_bind_group(self.gpu, self.pipelines.layouts());
-        for planned in run {
+        for (planned, timed) in run.iter().zip(&rect_queries) {
             let scissor = scaled(planned.scissor, planned.target, extent);
             if scissor.is_empty() {
                 continue;
+            }
+            if let Some(queries) = timed {
+                queries.write_in(&mut pass.pass, 0);
             }
             pass.pass.set_scissor_rect(
                 scissor.origin.x.max(0) as u32,
@@ -254,6 +273,9 @@ impl Recorder<'_> {
                 } else {
                     recorded.dropped += 1;
                 }
+            }
+            if let Some(queries) = timed {
+                queries.write_in(&mut pass.pass, 1);
             }
         }
     }
