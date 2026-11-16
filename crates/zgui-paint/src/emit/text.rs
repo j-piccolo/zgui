@@ -542,8 +542,7 @@ pub fn emit(
             style,
             inline,
             placement,
-            (surface, brush),
-            alpha,
+            (surface, brush, alpha),
         );
     }
     pushed += crate::emit::inline::decorations(
@@ -823,8 +822,7 @@ fn emit_parted(
     style: &crate::lower::PaintStyle,
     parts: &[crate::emit::inline::InlinePaint],
     placement: TextPlacement,
-    (surface, text_brush): (RunSurface, RunBrush),
-    alpha: f32,
+    (surface, text_brush, alpha): (RunSurface, RunBrush, f32),
 ) -> usize {
     let owner = |start: u32| {
         parts
