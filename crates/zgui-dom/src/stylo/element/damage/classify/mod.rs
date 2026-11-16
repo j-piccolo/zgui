@@ -6,7 +6,7 @@
 //! answer. Did anything that decides *which boxes exist* move? Did anything that decides where
 //! those boxes are and how large they are move? If neither, what did move — the shape of the area
 //! the element covers, or only the colours drawn into it? The last question asks if only the
-//! transitions moved. They change what a later change does, and cost nothing now.
+//! transitions or the animations moved. They change what a later change does, and cost nothing now.
 //!
 //! The order is what makes the answer narrow rather than merely correct. A width and a `display`
 //! are both "layout" to the style engine, and they are not the same work here: one throws away a
@@ -56,7 +56,7 @@ pub(super) fn cost(old: &ComputedValues, new: &ComputedValues) -> Cost {
         return cost;
     }
     // The engine calls the hook this feeds only after it found a layout-affecting difference. With
-    // no named property moved, only the transitions can explain it. Otherwise the property
+    // no named property moved, only the transitions or the animations can explain it. Otherwise the property
     // responsible is one this classification does not name.
     if !later::unchanged(old, new) {
         return Cost::Later;
