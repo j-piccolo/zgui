@@ -430,6 +430,9 @@ pub struct Inherited<'a> {
     /// The parts of nested inline boxes on the line, in tree order, whose own decorations are
     /// drawn with it.
     pub inline: &'a [crate::emit::inline::InlinePaint],
+    /// The alpha of the groups folded above the line, which the style's colours already carry.
+    /// A run's own colour comes from its brush slot instead, so it is multiplied in there.
+    pub alpha: f32,
 }
 
 /// Emits one line's glyphs and decorations, and returns how many primitives were pushed.
@@ -454,6 +457,7 @@ pub fn emit(
         text_fill,
         decorations,
         inline,
+        alpha,
     } = inherited;
     // Resolved once for the whole line rather than per pass: a gradient across the text is
     // measured across the line box, and resolving it again per shadow would intern the same ramp
@@ -508,6 +512,7 @@ pub fn emit(
                     brush: RunBrush::Solid,
                     offset,
                     force_mono: true,
+                    alpha: 1.0,
                 },
             );
         }
@@ -526,6 +531,7 @@ pub fn emit(
                 brush,
                 offset: Size::new(DevicePx(0.0), DevicePx(0.0)),
                 force_mono: false,
+                alpha,
             },
         );
     } else {
@@ -537,6 +543,7 @@ pub fn emit(
             inline,
             placement,
             (surface, brush),
+            alpha,
         );
     }
     pushed += crate::emit::inline::decorations(
@@ -571,6 +578,7 @@ pub fn emit(
                 brush: RunBrush::Solid,
                 offset: Size::new(DevicePx(0.0), DevicePx(0.0)),
                 force_mono: false,
+                alpha,
             },
         );
     }
@@ -661,6 +669,8 @@ struct Painting {
     offset: Size<DevicePx, Device>,
     /// Whether this pass is a silhouette in one colour rather than the text itself.
     force_mono: bool,
+    /// The folded alpha the run's brush colour is multiplied by; a silhouette's tint has it.
+    alpha: f32,
 }
 
 /// Emits one pass over one line's glyphs, and returns how many primitives were pushed.
@@ -735,7 +745,12 @@ fn draw(
     let color = if painting.force_mono {
         painting.tint
     } else {
-        brush(scene, run.slot, painting.tint)
+        // The fallback tint is the style's colour, already faded; a brush slot is not.
+        let color = brush(scene, run.slot, painting.tint);
+        match scene.text_paints.get(run.slot) {
+            Some(_) if painting.alpha < 1.0 => color.with_alpha(color.alpha() * painting.alpha),
+            _ => color,
+        }
     };
     match &run.content {
         Owned::Tiles(tiles) => {
@@ -809,6 +824,7 @@ fn emit_parted(
     parts: &[crate::emit::inline::InlinePaint],
     placement: TextPlacement,
     (surface, text_brush): (RunSurface, RunBrush),
+    alpha: f32,
 ) -> usize {
     let owner = |start: u32| {
         parts
@@ -860,6 +876,7 @@ fn emit_parted(
                         DevicePx(shadow.offset_y - shift(*owner)),
                     ),
                     force_mono: true,
+                    alpha: 1.0,
                 };
                 pushed += draw(scene, run, at, &mut index, placement, painting, false);
             }
@@ -886,6 +903,7 @@ fn emit_parted(
             brush: text_brush,
             offset: Size::new(DevicePx(0.0), DevicePx(-shift(owner(run.text_start)))),
             force_mono: false,
+            alpha,
         };
         pushed += draw(scene, run, at, &mut index, placement, painting, subpixel);
     }
@@ -1495,6 +1513,7 @@ mod tests {
                 text_fill: Some(&ramp),
                 decorations: &[],
                 inline: &[],
+                alpha: 1.0,
             },
         );
         let item = &scene.primitives.vectors[0];
