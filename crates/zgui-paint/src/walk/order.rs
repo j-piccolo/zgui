@@ -239,6 +239,7 @@ fn content_tracked(
                     text_fill: emission.text_fill,
                     decorations: emission.decorations,
                     inline: emission.inline,
+                    alpha: emission.alpha,
                 },
                 emission.text_placement,
             );
@@ -266,6 +267,7 @@ fn content_tracked(
                 text_fill: emission.text_fill,
                 decorations: emission.decorations,
                 inline: &[],
+                alpha: emission.alpha,
             },
             emission.text_placement,
         ),
