@@ -669,6 +669,8 @@ impl Window {
             probe.frame_ended(self);
         }
 
+        // What the frame did, beside how long it took.
+        zgui_profile::latency::note_counters();
         zgui_profile::latency::note_with("f.end", || {
             format!(
                 "{outcome:?} another={needs_another_frame} owed={owed} \
