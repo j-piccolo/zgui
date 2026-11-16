@@ -383,6 +383,7 @@ impl Renderer for WgpuRenderer {
             let image = image_of(&presented);
             self.blit(&mut encoder, view, formats.blit_undoes_srgb(), limit, image);
             draw_calls += 1;
+            zgui_profile::latency::mark("r.blit");
         }
         self.submit_frame(encoder);
         let acquisition = presented.acquisition;
@@ -749,11 +750,19 @@ impl WgpuRenderer {
     }
 
     /// Submits a frame's encoder, with the timing and arena bookkeeping that follows a submission.
+    ///
+    /// Each step is marked for the trace: wgpu-core replays a frame's recorded passes into the
+    /// driver's command buffers in `finish`, so the driver's share of a frame's CPU time lands
+    /// there, and the submit after it is the kernel's.
     fn submit_frame(&mut self, mut encoder: wgpu::CommandEncoder) {
         if let Some(timer) = &mut self.timer {
             timer.finish(&mut encoder);
+            zgui_profile::latency::mark("r.resolve");
         }
-        self.gpu.queue().submit([encoder.finish()]);
+        let commands = encoder.finish();
+        zgui_profile::latency::mark("r.finish");
+        self.gpu.queue().submit([commands]);
+        zgui_profile::latency::mark("r.submit");
         if let Some(timer) = &mut self.timer {
             timer.submitted();
         }
