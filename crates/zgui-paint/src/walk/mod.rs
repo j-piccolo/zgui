@@ -207,6 +207,8 @@ pub struct PaintReport {
     /// The chunk each fragment encoded this frame was given, when [`PaintInput::record_chunks`]
     /// was on.
     pub chunks: Vec<ChunkReport>,
+    /// Why each group that took a target did, when [`PaintInput::record_chunks`] was on.
+    pub group_whys: Vec<group::GroupWhy>,
 }
 
 /// The chunk one fragment was encoded into, and what the fragment paints.
@@ -1308,6 +1310,11 @@ impl stacking::Visitor for Pass<'_, '_> {
                 );
                 self.open.push((key, boundary));
                 self.report.groups += 1;
+                if self.input.record_chunks {
+                    self.report
+                        .group_whys
+                        .push(group::explain(store, key, &style, fragment));
+                }
             }
         }
         // A group's target is transparent, so per-channel text coverage inside it is meaningless

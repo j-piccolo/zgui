@@ -1702,6 +1702,7 @@ impl Window {
             let before = glyph_counts();
             let report = self.painter.emit(&input, &mut self.scene);
             crate::window::owners::note(&document, &report.chunks);
+            crate::window::owners::note_groups(&document, &report.group_whys);
             vector_report = report.vector_routes;
             self.layers_owed = report.layers_owed;
             let after = glyph_counts();

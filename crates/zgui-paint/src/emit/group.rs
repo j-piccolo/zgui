@@ -101,6 +101,151 @@ pub fn isolation(style: &PaintStyle, fragment: &Fragment) -> Isolation {
     Isolation::Target
 }
 
+/// Why a box took a target: the reason, and the one or two nodes that gave it.
+///
+/// A diagnostic for the latency trace, not a decision: it is worked out again from the fragment
+/// tree for a box that already took a target, only while the trace records chunks, so a profile
+/// can say which element kept a fade out of the fold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupWhy {
+    /// The box that took the target.
+    pub node: Option<zgui_dom::NodeKey>,
+    /// `style` (a blend, filter, clip path or 3D transform), `blending` (a blending descendant
+    /// under an isolating style), `backdrop`, or, when the subtree was not disjoint, where the
+    /// overlap is: `own-paint` (the box's own paint under `a`), `overlap` (`a` and `b`),
+    /// `drawing` (`a` draws shapes layout does not see) or `unknown`.
+    pub reason: &'static str,
+    /// The first node involved.
+    pub a: Option<zgui_dom::NodeKey>,
+    /// The second, for an overlap.
+    pub b: Option<zgui_dom::NodeKey>,
+}
+
+/// Why `key`, whose style is `style` and whose own piece is `fragment`, took a target.
+pub fn explain(
+    store: &zgui_layout::LayoutStore,
+    key: zgui_dom::side::BoxKey,
+    style: &PaintStyle,
+    fragment: &Fragment,
+) -> GroupWhy {
+    let why = |reason, a, b| GroupWhy {
+        node: fragment.node,
+        reason,
+        a,
+        b,
+    };
+    if style.needs_group() {
+        return why("style", None, None);
+    }
+    if style.group.isolates_blending
+        && fragment
+            .flags
+            .contains(FragmentFlags::HAS_BLENDING_DESCENDANT)
+    {
+        return why("blending", None, None);
+    }
+    if fragment.flags.contains(FragmentFlags::READS_BACKDROP_BELOW) {
+        return why("backdrop", None, None);
+    }
+    let (reason, a, b) = overlap_in(store, key, 0);
+    why(reason, a, b)
+}
+
+/// Where the subtree of `key` stops being disjoint, descending into a child that is not disjoint
+/// in itself. Inks are compared as stored, each in its own anchor space, which is what the fold
+/// compares for every box that is not a scroll container's content.
+fn overlap_in(
+    store: &zgui_layout::LayoutStore,
+    key: zgui_dom::side::BoxKey,
+    depth: usize,
+) -> (
+    &'static str,
+    Option<zgui_dom::NodeKey>,
+    Option<zgui_dom::NodeKey>,
+) {
+    use zgui_layout::FragmentKind;
+    let unseen = |kind: FragmentKind| matches!(kind, FragmentKind::Vector | FragmentKind::Custom);
+    let pieces: Vec<&Fragment> = store
+        .fragments_of_box(key)
+        .iter()
+        .filter_map(|frag| store.fragment(*frag))
+        .collect();
+    let Some(own) = pieces.first() else {
+        return ("unknown", None, None);
+    };
+    let paints_nothing =
+        own.kind == FragmentKind::Box && own.flags.contains(FragmentFlags::PAINTS_NOTHING);
+    let own_paint = if paints_nothing { Rect::ZERO } else { own.ink };
+    let mut inks: Vec<Below> = pieces[1..]
+        .iter()
+        .map(|piece| Below {
+            ink: piece.ink,
+            node: piece.node.or(own.node),
+            disjoint: true,
+            drawing: unseen(piece.kind),
+            child: None,
+        })
+        .collect();
+    for &child in &store.node(key).children {
+        let child_pieces: Vec<&Fragment> = store
+            .fragments_of_box(child)
+            .iter()
+            .filter_map(|frag| store.fragment(*frag))
+            .collect();
+        let Some(first) = child_pieces.first() else {
+            continue;
+        };
+        let ink = child_pieces.iter().fold(first.subtree_ink, |held, piece| {
+            held.union(piece.subtree_ink)
+        });
+        let disjoint = child_pieces.iter().all(|piece| piece.subtree_disjoint);
+        let drawing = child_pieces.iter().any(|piece| unseen(piece.kind));
+        inks.push(Below {
+            ink,
+            node: first.node,
+            disjoint,
+            drawing,
+            child: Some(child),
+        });
+    }
+    for below in &inks {
+        if !own_paint.is_empty() && !below.ink.is_empty() && own_paint.intersects(below.ink) {
+            return ("own-paint", own.node, below.node);
+        }
+    }
+    for (index, one) in inks.iter().enumerate() {
+        for other in &inks[index + 1..] {
+            if !one.ink.is_empty() && !other.ink.is_empty() && one.ink.intersects(other.ink) {
+                return ("overlap", one.node, other.node);
+            }
+        }
+    }
+    for below in &inks {
+        if below.drawing {
+            return ("drawing", below.node, None);
+        }
+        if !below.disjoint
+            && let Some(child) = below.child
+            && depth < 16
+        {
+            return overlap_in(store, child, depth + 1);
+        }
+    }
+    ("unknown", own.node, None)
+}
+
+/// A later piece of a box, or one child's subtree, as [`overlap_in`] weighs it.
+struct Below {
+    ink: Rect<DevicePx, Device>,
+    node: Option<zgui_dom::NodeKey>,
+    /// Whether it is disjoint in itself.
+    disjoint: bool,
+    /// Whether it draws shapes layout does not see.
+    drawing: bool,
+    /// The child box, for a child's subtree.
+    child: Option<zgui_dom::side::BoxKey>,
+}
+
 /// What a group writes, in the coordinate system `space` it composites under.
 ///
 /// The fragment's subtree ink is in its anchor's space, through the matrix `space` had when the

@@ -22,6 +22,24 @@ pub(crate) fn note(document: &Document, chunks: &[ChunkReport]) {
     }
 }
 
+/// Notes `group.why el=<element> reason=<reason> a=<element> b=<element>` for each group that took
+/// a target: which element kept a fade out of the fold, and what overlapped in it.
+pub(crate) fn note_groups(document: &Document, whys: &[zgui_paint::GroupWhy]) {
+    let name =
+        |node: Option<NodeKey>| node.map_or_else(|| "-".to_owned(), |node| path(document, node));
+    for why in whys {
+        zgui_profile::latency::note_with("group.why", || {
+            format!(
+                "el={} reason={} a={} b={}",
+                name(why.node),
+                why.reason,
+                name(why.a),
+                name(why.b)
+            )
+        });
+    }
+}
+
 /// The element `node` as a selector, after its nearest element ancestors: `a.card > img.poster`.
 fn path(document: &Document, node: NodeKey) -> String {
     let store = document.store();
