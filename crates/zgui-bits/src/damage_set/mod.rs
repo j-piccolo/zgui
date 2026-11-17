@@ -228,11 +228,13 @@ impl<const N: usize> DamageSet<N> {
         }
         // The held rectangles that overlap it closely enough to be one region with it.
         let mut rect = rect;
-        while let Some(index) = self
-            .rects()
-            .iter()
-            .position(|held| merge::meets(*held, rect) && merge::worth_merging(*held, rect))
-        {
+        while let Some(index) = self.rects().iter().position(|held| {
+            if merge::meets(*held, rect) {
+                merge::worth_merging(*held, rect)
+            } else {
+                merge::nearly_one(*held, rect)
+            }
+        }) {
             let held = self.rects[index];
             self.remove(index);
             rect = merge::join(held, rect);

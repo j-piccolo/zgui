@@ -144,6 +144,19 @@ pub(super) fn worth_merging(held: Rect<i32, Device>, incoming: Rect<i32, Device>
 
 /// The parts of `rect` outside `held`, as up to four disjoint rectangles: the rows above and below
 /// `held` across the whole of `rect`, and the columns beside it between them.
+/// Whether two rectangles that do not meet are close enough to draw as one: the box around them
+/// wastes under an eighth of what they cover.
+///
+/// Each rectangle is drawn as its own scissored run of every batch under it, with its own clear,
+/// so a list's rows damaged one by one and four pixels apart cost six times the draws of the one
+/// rectangle around them, for four per cent fewer pixels.
+pub(super) fn nearly_one(held: Rect<i32, Device>, incoming: Rect<i32, Device>) -> bool {
+    let (held, incoming) = (Span::of(held), Span::of(incoming));
+    let covered = held.area().saturating_add(incoming.area());
+    let waste = held.union(incoming).area().saturating_sub(covered);
+    waste.saturating_mul(8) <= covered
+}
+
 pub(super) fn outside(
     rect: Rect<i32, Device>,
     held: Rect<i32, Device>,
@@ -545,8 +558,8 @@ mod tests {
     #[test]
     fn long_streams_merge_as_the_reference_does() {
         // A grid of loaders absorbed one by one, which fills the set and merges on nearly every
-        // rectangle after that.
-        let grid = (0..500).map(|index| rect(15 + index % 24 * 48, 15 + index / 24 * 22, 42, 16));
+        // rectangle after that. Far enough apart that no two are drawn as one on arrival.
+        let grid = (0..500).map(|index| rect(15 + index % 24 * 64, 15 + index / 24 * 30, 42, 16));
         assert!(check_stream::<6>(grid) > 400);
 
         // Scattered rectangles of mixed sizes. A new set every 40 keeps it from growing whole.
