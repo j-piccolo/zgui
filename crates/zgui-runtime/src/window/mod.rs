@@ -256,6 +256,9 @@ pub struct Window {
     raster: Arc<dyn zgui_text::GlyphRaster>,
     /// What this frame must redraw.
     damage: DamageSet,
+    /// Where the emit walk descends this frame besides the damage, redrawing nothing there: the
+    /// boxes an animation moved by writing their coordinate systems.
+    walk_reach: DamageSet,
     /// The largest extent the surface had since the last frame that retired its damage.
     ///
     /// Damage outside it names no pixel of the drawn frame or of the next one, so a layout pass
@@ -737,6 +740,7 @@ impl Window {
             budgets: crate::budget::Budgets::new(),
             raster,
             damage: DamageSet::full(),
+            walk_reach: DamageSet::new(),
             damage_extent: None,
             rigid_moves: zgui_layout::fragment::diff::RigidMoves::default(),
             damage_before_layout: DamageSet::new(),

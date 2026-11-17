@@ -47,14 +47,17 @@ impl Window {
             // The display list is handed to the tick rather than consulted after it, because what
             // an element owes is decided from whether the box could be moved without composing it —
             // and that is answerable only by whatever holds the coordinate systems.
+            self.scene.begin_writes();
             let mut writing = place::Writing {
                 scene: &mut self.scene,
                 layout: &layout,
                 scale: self.scale,
                 damage: zgui_bits::DamageSet::new(),
+                reach: zgui_bits::DamageSet::new(),
                 painter: &self.painter,
             };
             let tick = self.animator.tick(&mut document, &report, &mut writing);
+            self.walk_reach.absorb_set(&writing.reach);
             (tick, writing.damage)
         };
 

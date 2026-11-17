@@ -62,6 +62,38 @@ impl Scene {
         }
     }
 
+    /// The clip chain the primitive one log entry names draws through; the root for a group
+    /// marker or a backdrop, which are cut by what they enclose.
+    pub(crate) fn clip_of_op(&self, op: PaintOp) -> crate::ClipId {
+        let index = op.index as usize;
+        let clip = match op.kind {
+            PrimitiveKind::Quad => self.primitives.quads.get(index).map(|p| p.clip_id()),
+            PrimitiveKind::Shaded => self.primitives.shaded.get(index).map(|p| p.clip_id()),
+            PrimitiveKind::Shadow => self.primitives.shadows.get(index).map(|p| p.clip_id()),
+            PrimitiveKind::Decoration => {
+                self.primitives.decorations.get(index).map(|p| p.clip_id())
+            }
+            PrimitiveKind::MonoSprite => {
+                self.primitives.mono_sprites.get(index).map(|p| p.clip_id())
+            }
+            PrimitiveKind::SubpixelSprite => self
+                .primitives
+                .subpixel_sprites
+                .get(index)
+                .map(|p| p.clip_id()),
+            PrimitiveKind::ColorSprite => self
+                .primitives
+                .color_sprites
+                .get(index)
+                .map(|p| p.clip_id()),
+            PrimitiveKind::Marks => self.primitives.marks.get(index).map(|p| p.clip_id()),
+            PrimitiveKind::External => self.primitives.externals.get(index).map(|p| p.clip),
+            PrimitiveKind::Vector => self.primitives.vectors.get(index).map(|p| p.clip),
+            PrimitiveKind::Backdrop | PrimitiveKind::GroupStart | PrimitiveKind::GroupEnd => None,
+        };
+        clip.unwrap_or(crate::ClipId::ROOT)
+    }
+
     /// The coordinate system the primitive one log entry names is drawn under.
     ///
     /// Resolved from the slot the primitive carries rather than from anything recorded beside it,

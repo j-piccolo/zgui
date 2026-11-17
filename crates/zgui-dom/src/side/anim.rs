@@ -39,6 +39,11 @@ pub struct AnimOverride {
     pub border_colors: Option<[AbsoluteColor; 4]>,
     /// The animated `outline-color`.
     pub outline_color: Option<AbsoluteColor>,
+    /// The animated `color`, for the text the element's own lines draw.
+    ///
+    /// Taken only for an element whose subtree draws nothing else with it; the animator sends any
+    /// other back to the cascade, which is what moves an inherited colour everywhere it is read.
+    pub color: Option<AbsoluteColor>,
 }
 
 impl AnimOverride {
@@ -54,6 +59,7 @@ impl AnimOverride {
             && self.background_color.is_none()
             && self.border_colors.is_none()
             && self.outline_color.is_none()
+            && self.color.is_none()
     }
 
     /// A number that changes whenever any overridden value does.
@@ -76,6 +82,7 @@ impl AnimOverride {
             .iter()
             .chain(self.outline_color.iter())
             .chain(self.border_colors.iter().flatten())
+            .chain(self.color.iter())
         {
             for component in color.raw_components() {
                 mix(component.to_bits() as u64);

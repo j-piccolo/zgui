@@ -224,7 +224,10 @@ pub(crate) fn advance(
         // of *which* properties moved cannot see the difference between that and a transform being
         // nudged. So the classification is only final once the two styles have been compared.
         let mut sampled = None;
-        if properties.is_paint_only() || properties.is_placement_only() {
+        if properties.is_paint_only()
+            || properties.is_placement_only()
+            || properties.overrides_but_text_color()
+        {
             let Some(style) = document.node(index).primary_style() else {
                 return alive;
             };
@@ -258,7 +261,9 @@ pub(crate) fn advance(
         .map(|row| {
             // A row demoted to the cascade after it was sampled carries values nothing will read,
             // and leaving them on it would be a second answer to which path the element took.
-            let usable = row.properties.is_paint_only() || row.properties.is_placement_only();
+            let usable = row.properties.is_paint_only()
+                || row.properties.is_placement_only()
+                || row.properties.overrides_but_text_color();
             ElementAnimation {
                 node: document.store().key_of(row.index),
                 index: row.index,

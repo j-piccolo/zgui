@@ -425,6 +425,8 @@ enum RunBrush {
 pub struct Inherited<'a> {
     /// The ramp painting the glyphs, if a box above them asked for one.
     pub text_fill: Option<&'a crate::lower::background::GradientSpec>,
+    /// The animated colour the glyphs are drawn in instead of their brush slot's, already faded.
+    pub text_color: Option<Color>,
     /// The decorations drawn across the line, outermost first.
     pub decorations: &'a [DecorationStyle],
     /// The parts of nested inline boxes on the line, in tree order, whose own decorations are
@@ -455,10 +457,14 @@ pub fn emit(
 ) -> usize {
     let Inherited {
         text_fill,
+        text_color,
         decorations,
         inline,
         alpha,
     } = inherited;
+    // A moving `color` is drawn as it is now rather than as the run's slot last heard it.
+    let tint = text_color.unwrap_or(style.color);
+    let own_tint = text_color.is_some();
     // Resolved once for the whole line rather than per pass: a gradient across the text is
     // measured across the line box, and resolving it again per shadow would intern the same ramp
     // several times a frame.
@@ -512,6 +518,7 @@ pub fn emit(
                     brush: RunBrush::Solid,
                     offset,
                     force_mono: true,
+                    own_tint: false,
                     alpha: 1.0,
                 },
             );
@@ -527,10 +534,11 @@ pub fn emit(
             placement,
             surface,
             Painting {
-                tint: style.color,
+                tint,
                 brush,
                 offset: Size::new(DevicePx(0.0), DevicePx(0.0)),
                 force_mono: false,
+                own_tint,
                 alpha,
             },
         );
@@ -542,7 +550,7 @@ pub fn emit(
             style,
             inline,
             placement,
-            (surface, brush, alpha),
+            (surface, brush, alpha, text_color),
         );
     }
     pushed += crate::emit::inline::decorations(
@@ -573,10 +581,11 @@ pub fn emit(
             },
             surface,
             Painting {
-                tint: style.color,
+                tint,
                 brush: RunBrush::Solid,
                 offset: Size::new(DevicePx(0.0), DevicePx(0.0)),
                 force_mono: false,
+                own_tint,
                 alpha,
             },
         );
@@ -668,6 +677,8 @@ struct Painting {
     offset: Size<DevicePx, Device>,
     /// Whether this pass is a silhouette in one colour rather than the text itself.
     force_mono: bool,
+    /// Whether the tint is the text's colour now, over whatever the run's brush slot holds.
+    own_tint: bool,
     /// The folded alpha the run's brush colour is multiplied by; a silhouette's tint has it.
     alpha: f32,
 }
@@ -741,7 +752,7 @@ fn draw(
     subpixel: bool,
 ) -> usize {
     let mut pushed = 0;
-    let color = if painting.force_mono {
+    let color = if painting.force_mono || painting.own_tint {
         painting.tint
     } else {
         // The fallback tint is the style's colour, already faded; a brush slot is not.
@@ -822,7 +833,7 @@ fn emit_parted(
     style: &crate::lower::PaintStyle,
     parts: &[crate::emit::inline::InlinePaint],
     placement: TextPlacement,
-    (surface, text_brush, alpha): (RunSurface, RunBrush, f32),
+    (surface, text_brush, alpha, text_color): (RunSurface, RunBrush, f32, Option<Color>),
 ) -> usize {
     let owner = |start: u32| {
         parts
@@ -874,6 +885,7 @@ fn emit_parted(
                         DevicePx(shadow.offset_y - shift(*owner)),
                     ),
                     force_mono: true,
+                    own_tint: false,
                     alpha: 1.0,
                 };
                 pushed += draw(scene, run, at, &mut index, placement, painting, false);
@@ -896,11 +908,17 @@ fn emit_parted(
     let emitted = collect(glyphs, at, placement, surface, subpixel);
     let mut index = 0;
     for run in &emitted {
+        // The line's own text takes an animated colour; a nested box's text keeps its own.
+        let own = owner(run.text_start)
+            .is_none()
+            .then_some(text_color)
+            .flatten();
         let painting = Painting {
-            tint: style.color,
+            tint: own.unwrap_or(style.color),
             brush: text_brush,
             offset: Size::new(DevicePx(0.0), DevicePx(-shift(owner(run.text_start)))),
             force_mono: false,
+            own_tint: own.is_some(),
             alpha,
         };
         pushed += draw(scene, run, at, &mut index, placement, painting, subpixel);
@@ -1509,6 +1527,7 @@ mod tests {
             curve(),
             super::Inherited {
                 text_fill: Some(&ramp),
+                text_color: None,
                 decorations: &[],
                 inline: &[],
                 alpha: 1.0,

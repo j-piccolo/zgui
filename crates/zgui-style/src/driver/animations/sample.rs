@@ -56,6 +56,11 @@ bitflags::bitflags! {
         /// by the *matrix*, which the fragment pass composes down the tree from whatever it was
         /// given.
         const TRANSFORM = 1 << 3;
+        /// `color`, which the text of the element's own lines is drawn in.
+        ///
+        /// Inherited, so a descendant that draws with it would need the cascade; the animator
+        /// asks the window whether any does, and sends the element back to the cascade if so.
+        const TEXT_COLOR = 1 << 4;
     }
 }
 
@@ -64,7 +69,7 @@ impl AnimatedProperties {
     ///
     /// An empty set is not: nothing is animating, so there is nothing to take any path.
     pub fn is_paint_only(self) -> bool {
-        !self.is_empty() && !self.contains(Self::CASCADED) && !self.contains(Self::TRANSFORM)
+        !self.is_empty() && !self.intersects(Self::CASCADED | Self::TRANSFORM | Self::TEXT_COLOR)
     }
 
     /// Whether everything moving here is expressible by recomposing the box's fragments.
@@ -74,7 +79,20 @@ impl AnimatedProperties {
     /// composed over the shared paint description at emission, and the transform is read while the
     /// fragment is placed. Neither needs the cascade, so an element doing both still needs neither.
     pub fn is_placement_only(self) -> bool {
-        !self.contains(Self::CASCADED) && self.contains(Self::TRANSFORM)
+        !self.intersects(Self::CASCADED | Self::TEXT_COLOR) && self.contains(Self::TRANSFORM)
+    }
+
+    /// Whether a moving `color` is all that keeps these off the paths that need no cascade.
+    ///
+    /// An inherited colour cascades, so neither of the two above admits one. A window whose
+    /// element draws nothing but text in it can draw the colour from an override instead, and
+    /// asks this to know that it may: the values are sampled for it, and it decides.
+    pub fn overrides_but_text_color(self) -> bool {
+        if !self.contains(Self::TEXT_COLOR) {
+            return false;
+        }
+        let rest = self.difference(Self::TEXT_COLOR);
+        rest.is_empty() || rest.is_paint_only() || rest.is_placement_only()
     }
 }
 
@@ -96,8 +114,27 @@ fn kind_of(property: &OwnedPropertyDeclarationId) -> AnimatedProperties {
         | LonghandId::BorderBottomColor
         | LonghandId::BorderLeftColor
         | LonghandId::OutlineColor => AnimatedProperties::PAINT_COLOR,
+        LonghandId::Color => AnimatedProperties::TEXT_COLOR,
         _ => AnimatedProperties::CASCADED,
     }
+}
+
+/// Whether `style` transitions `color`, by name or through `all`.
+///
+/// An element below one whose `color` moves runs its own transition as the colour it inherits
+/// moves under it, so the colour can only be moved without the cascade where none below does.
+pub fn transitions_text_color(style: &ComputedValues) -> bool {
+    let ui = style.get_ui();
+    // Every element transitions `all` by default, over no time at all.
+    style::properties::TransitionPropertyIterator::from_style(style).any(|transition| {
+        transition.property == OwnedPropertyDeclarationId::Longhand(LonghandId::Color)
+            && ui
+                .transition_duration_mod(transition.index)
+                .seconds()
+                .max(0.0)
+                + ui.transition_delay_mod(transition.index).seconds()
+                > 0.0
+    })
 }
 
 /// Which kinds of property `set`'s animations and transitions are moving at `now`.
@@ -180,6 +217,52 @@ pub(crate) fn values(
     }
     if animated.get_outline().outline_color != base.get_outline().outline_color {
         over.outline_color = Some(resolved(&animated, &animated.get_outline().outline_color));
+    }
+    let text = &animated.get_inherited_text().color;
+    if *text != base.get_inherited_text().color {
+        over.color = Some(text.clone());
+        // A colour written `currentColor` follows the text, and the shared style resolved it
+        // against where the text began.
+        let background = &animated.get_background().background_color;
+        if background.is_currentcolor() {
+            over.background_color = Some(resolved(&animated, background));
+        }
+        // `currentColor` is every border's and outline's initial colour; only one that is drawn
+        // reads it, and an override on one that is not would give the box a stroke it lacks.
+        let sides = [
+            (
+                &border.border_top_color,
+                border.border_top_style,
+                &border.border_top_width,
+            ),
+            (
+                &border.border_right_color,
+                border.border_right_style,
+                &border.border_right_width,
+            ),
+            (
+                &border.border_bottom_color,
+                border.border_bottom_style,
+                &border.border_bottom_width,
+            ),
+            (
+                &border.border_left_color,
+                border.border_left_style,
+                &border.border_left_width,
+            ),
+        ];
+        if sides.iter().any(|(color, style, width)| {
+            color.is_currentcolor() && !style.none_or_hidden() && width.0 > app_units::Au(0)
+        }) {
+            over.border_colors = Some(sides.map(|(side, _, _)| resolved(&animated, side)));
+        }
+        let outline = animated.get_outline();
+        if outline.outline_color.is_currentcolor()
+            && !outline.outline_style.none_or_hidden()
+            && outline.outline_width.0 > app_units::Au(0)
+        {
+            over.outline_color = Some(resolved(&animated, &outline.outline_color));
+        }
     }
     let demoted = placement.is_err();
     Sampled {

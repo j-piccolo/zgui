@@ -710,6 +710,34 @@ impl Scene {
         by: Size<DevicePx, Device>,
         source: u64,
     ) -> Range<u32> {
+        self.replay_chunk_faded(chunk, by, source, 1.0)
+    }
+
+    /// Whether every primitive of `chunk` carries its colour inline, so a replay can fade it
+    /// by scaling that colour: glyphs and pictures. A quad names its paints in a table, and a
+    /// chunk holding one encodes again.
+    pub fn fades_inline(chunk: &ChunkPrims) -> bool {
+        chunk.quads.is_empty()
+            && chunk.shaded.is_empty()
+            && chunk.shadows.is_empty()
+            && chunk.decorations.is_empty()
+            && chunk.marks.is_empty()
+            && chunk.externals.is_empty()
+            && chunk.backdrops.is_empty()
+            && chunk.vectors.is_empty()
+    }
+
+    /// [`Scene::replay_chunk`], every colour multiplied by `fade`: a chunk encoded under one
+    /// opacity, replayed under another. Only for a chunk [`Scene::fades_inline`] accepts. A faded
+    /// replay is gathered from the frame's arrays, since the resident copy holds the old colours.
+    pub fn replay_chunk_faded(
+        &mut self,
+        chunk: &ChunkPrims,
+        by: Size<DevicePx, Device>,
+        source: u64,
+        fade: f32,
+    ) -> Range<u32> {
+        let source = if fade == 1.0 { source } else { 0 };
         let start = self.ops.len() as u32;
         let in_place = by.width.0 == 0.0 && by.height.0 == 0.0;
         if !in_place && source != 0 {
@@ -824,6 +852,9 @@ impl Scene {
                         continue;
                     };
                     translate(&mut sprite.bounds, by);
+                    if fade != 1.0 {
+                        sprite.color = sprite.color.map(|channel| channel * fade);
+                    }
                     if self.push_mono_sprite(sprite).is_some() && source != 0 {
                         self.stamp_replayed(PrimitiveKind::MonoSprite, source, op.index);
                     }
@@ -833,6 +864,9 @@ impl Scene {
                         continue;
                     };
                     translate(&mut sprite.bounds, by);
+                    if fade != 1.0 {
+                        sprite.color = sprite.color.map(|channel| channel * fade);
+                    }
                     if self.push_subpixel_sprite(sprite).is_some() && source != 0 {
                         self.stamp_replayed(PrimitiveKind::SubpixelSprite, source, op.index);
                     }
@@ -845,6 +879,7 @@ impl Scene {
                     // The frame moves with the picture it confines, or a replayed `cover` is cut
                     // against the rectangle its box moved away from.
                     translate(&mut sprite.frame, by);
+                    sprite.opacity *= fade;
                     if self.push_color_sprite(sprite).is_some() && source != 0 {
                         self.stamp_replayed(PrimitiveKind::ColorSprite, source, op.index);
                     }

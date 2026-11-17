@@ -150,6 +150,7 @@ impl Animator {
                     if moved {
                         place.place(element.node, placement)
                     } else {
+                        place.held(element.node);
                         Placed::Held
                     }
                 }

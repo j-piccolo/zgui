@@ -573,7 +573,16 @@ fn a_content_space_under_a_panel_that_takes_a_transform_is_drawn_and_damaged_whe
             .expect("a panel piece")
             .device_subtree_ink(&Placements::of(&frame.spatial))
     };
+    // The panel's own piece is drawn whole; what its port scrolls past its edges is clipped away
+    // and owes no damage.
+    let own_ink = |store: &LayoutStore, frame: &Frame| {
+        let fragment = store
+            .fragment(store.fragments_of_box(panel_box)[0])
+            .expect("a panel piece");
+        fragment.on_device(fragment.ink, &Placements::of(&frame.spatial))
+    };
     let was = panel_ink(&store, &frame);
+    let was_own = own_ink(&store, &frame);
     frame.damage = zgui_bits::DamageSet::new();
     let before = drawn(&frame, &store);
     compose(
@@ -598,7 +607,7 @@ fn a_content_space_under_a_panel_that_takes_a_transform_is_drawn_and_damaged_whe
     // through the matrix twice lands outside both.
     let is = panel_ink(&store, &frame);
     let damage = frame.damage.bounds().expect("the matrix damaged something");
-    for rect in [was, is] {
+    for rect in [was_own, own_ink(&store, &frame)] {
         let pixels = zgui_layout::fragment::diff::pixels(rect);
         assert!(
             damage.contains_rect(pixels),
