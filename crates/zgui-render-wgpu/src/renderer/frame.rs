@@ -247,7 +247,8 @@ impl FrameBuffers {
     }
 
     /// Makes all staging chunks readable by the submitted copy commands.
-    pub fn finish_uploads(&mut self) {
+    pub fn finish_uploads(&mut self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder) {
+        self.uploader.flush(gpu, encoder);
         self.uploader.finish();
     }
 
@@ -379,7 +380,7 @@ impl FrameBuffers {
     /// The arena lane a pipeline draws out of.
     pub fn lane(kind: PipelineKind) -> Option<usize> {
         Some(match kind {
-            PipelineKind::Quad => 0,
+            PipelineKind::Quad | PipelineKind::QuadSolid | PipelineKind::QuadReplace => 0,
             PipelineKind::Shadow => 1,
             PipelineKind::Decoration => 2,
             PipelineKind::MonoSprite => 3,
@@ -849,9 +850,10 @@ mod tests {
 
         let gpu = std::sync::Arc::clone(&renderer.gpu);
         let format = crate::target::group_pool::GroupPool::FORMAT;
+        // A frame with no dashed border draws its quads with the dash-free pipeline.
         let _ = renderer.pipelines.borrow_mut().get(
             &gpu,
-            crate::pipeline::kind::PipelineKind::Quad,
+            crate::pipeline::kind::PipelineKind::QuadSolid,
             format,
         );
         assert!(

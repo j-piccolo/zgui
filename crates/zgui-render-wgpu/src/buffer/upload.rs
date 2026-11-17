@@ -50,6 +50,18 @@ pub struct UploadBelt {
     mapping_bytes: u64,
     oneshot_bytes: u64,
     allocations: u32,
+    /// Buffer writes waiting for [`UploadBelt::flush`], their bytes in `staged`.
+    pending: Vec<Pending>,
+    staged: Vec<u8>,
+}
+
+/// One buffer write, queued so the frame's writes to one buffer can share a copy.
+#[derive(Debug)]
+struct Pending {
+    target: wgpu::Buffer,
+    offset: u64,
+    /// Where its bytes are in [`UploadBelt::staged`].
+    staged: std::ops::Range<usize>,
 }
 
 impl std::fmt::Debug for UploadBelt {
@@ -77,6 +89,8 @@ impl Default for UploadBelt {
             mapping_bytes: 0,
             oneshot_bytes: 0,
             allocations: 0,
+            pending: Vec::new(),
+            staged: Vec::new(),
         }
     }
 }
@@ -117,11 +131,15 @@ impl UploadBelt {
         });
     }
 
-    /// Copies bytes into `target` through a mapped reusable chunk.
+    /// Queues bytes for `target`, copied by the next [`UploadBelt::flush`].
+    ///
+    /// Queued rather than copied at once: Intel's driver runs every buffer copy as a blit of its
+    /// own, a few microseconds of GPU and of CPU each whatever its size, and a frame writes a
+    /// buffer's neighbouring ranges one chunk at a time, interleaved with other buffers' writes.
     pub fn write(
         &mut self,
-        gpu: &Gpu,
-        encoder: &mut wgpu::CommandEncoder,
+        _gpu: &Gpu,
+        _encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::Buffer,
         target_offset: u64,
         bytes: &[u8],
@@ -138,7 +156,100 @@ impl UploadBelt {
             target_offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT),
             "upload offset {target_offset} is not copy-buffer aligned"
         );
+        let at = self.staged.len();
+        self.staged.extend_from_slice(bytes);
+        self.pending.push(Pending {
+            target: target.clone(),
+            offset: target_offset,
+            staged: at..self.staged.len(),
+        });
+        zgui_profile::counter::add(zgui_profile::Counter::BytesUploaded, size);
+        size
+    }
 
+    /// Records the queued writes, one copy for each run of them that meets end to end in one
+    /// buffer. A buffer two writes overlap in keeps its writes apart and in the order made, so
+    /// the later one still wins.
+    pub fn flush(&mut self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let mut pending = core::mem::take(&mut self.pending);
+        let staged = core::mem::take(&mut self.staged);
+        // Stable: writes to one place stay in the order they were made.
+        pending.sort_by(|a, b| a.target.cmp(&b.target).then(a.offset.cmp(&b.offset)));
+        let mut run = Vec::new();
+        let mut at = 0;
+        while at < pending.len() {
+            let mut end = at + 1;
+            while end < pending.len() && pending[end].target == pending[at].target {
+                end += 1;
+            }
+            let group = &pending[at..end];
+            let overlaps = group
+                .windows(2)
+                .any(|pair| pair[1].offset < pair[0].offset + pair[0].staged.len() as u64);
+            if overlaps {
+                let mut made: Vec<&Pending> = group.iter().collect();
+                made.sort_by_key(|write| write.staged.start);
+                for write in made {
+                    self.copy(
+                        gpu,
+                        encoder,
+                        &write.target,
+                        write.offset,
+                        &staged[write.staged.clone()],
+                    );
+                }
+            } else {
+                let mut first = 0;
+                while first < group.len() {
+                    let mut last = first;
+                    while last + 1 < group.len()
+                        && group[last + 1].offset
+                            == group[last].offset + group[last].staged.len() as u64
+                    {
+                        last += 1;
+                    }
+                    let bytes = if first == last {
+                        &staged[group[first].staged.clone()]
+                    } else {
+                        run.clear();
+                        for write in &group[first..=last] {
+                            run.extend_from_slice(&staged[write.staged.clone()]);
+                        }
+                        &run[..]
+                    };
+                    self.copy(
+                        gpu,
+                        encoder,
+                        &group[first].target,
+                        group[first].offset,
+                        bytes,
+                    );
+                    first = last + 1;
+                }
+            }
+            at = end;
+        }
+        // Kept for the next frame's writes, empty.
+        let mut staged = staged;
+        staged.clear();
+        self.staged = staged;
+        pending.clear();
+        self.pending = pending;
+    }
+
+    /// Copies bytes into `target` through a mapped reusable chunk, now.
+    fn copy(
+        &mut self,
+        gpu: &Gpu,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::Buffer,
+        target_offset: u64,
+        bytes: &[u8],
+    ) {
+        let size = bytes.len() as u64;
         self.receive();
         let active = self
             .active
@@ -167,9 +278,6 @@ impl UploadBelt {
         zgui_profile::latency::note_with("gpu.copy", || format!("site=upload bytes={size}"));
         encoder.copy_buffer_to_buffer(&chunk.buffer, offset, target, target_offset, size);
         slice.get_mapped_range_mut().copy_from_slice(bytes);
-
-        zgui_profile::counter::add(zgui_profile::Counter::BytesUploaded, size);
-        size
     }
 
     /// Copies tightly packed texels into level `mip` of a texture through padded mapped rows.
@@ -264,6 +372,10 @@ impl UploadBelt {
 
     /// Unmaps every chunk referenced by the encoder, making it ready for submission.
     pub fn finish(&mut self) {
+        debug_assert!(
+            self.pending.is_empty(),
+            "buffer writes were queued and never flushed"
+        );
         for chunk in self.active.drain(..) {
             chunk.buffer.unmap();
             self.closed.push(chunk);

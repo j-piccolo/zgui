@@ -253,6 +253,7 @@ fn plan_rect(
     // An opaque quad that covers the whole rectangle hides the clear and everything drawn before
     // it, so the rectangle starts at that quad.
     let cover = reach::cover(scene, batches, rect);
+    let replacing = cover.is_some_and(|(_, _, replacing)| replacing);
     if cover.is_none() {
         // The rectangle is about to be redrawn, so what is in it goes first. It is a draw because
         // a render pass clears its whole attachment or none of it, and clearing all of it would
@@ -263,8 +264,18 @@ fn plan_rect(
     for (index, Reached { batch, reach }) in batches.iter().enumerate() {
         let trimmed;
         let batch = match cover {
-            Some((first, _)) if index < first => continue,
-            Some((first, at)) if index == first => match batch {
+            Some((first, _, _)) if index < first => continue,
+            Some((first, at, _)) if index == first => match batch {
+                Batch::Quads(range) if replacing => {
+                    // The cover lands on what the clear would have left, so it replaces it.
+                    let start = range.start + at;
+                    builder.draw(PlannedDraw::Replace(Batch::Quads(start..start + 1)));
+                    if start + 1 >= range.end {
+                        continue;
+                    }
+                    trimmed = Batch::Quads(start + 1..range.end);
+                    &trimmed
+                }
                 Batch::Quads(range) => {
                     trimmed = Batch::Quads(range.start + at..range.end);
                     &trimmed

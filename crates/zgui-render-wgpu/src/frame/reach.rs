@@ -163,24 +163,32 @@ pub fn ink(scene: &Scene, batch: &Batch, scissor: Rect<i32, Device>) -> Option<I
 }
 
 /// The last quad in `batches` that hides everything drawn before it inside `rect`, as the index
-/// of its batch and its position in that batch.
+/// of its batch, its position in that batch, and whether it has to be drawn replacing what is there.
 ///
 /// A damage rectangle under an opaque background redraws every layer beneath it: the clear, the
 /// window, the page. Only the top opaque layer can show. So the plan starts at that quad and drops
 /// the clear and every batch before it. Only a quad outside every group can be such a cover, and
-/// only a quad that is opaque on every pixel of `rect`: a solid fill at full alpha, square corners,
-/// no border, an upright transform, a clip without rounded tests, and bounds that contain `rect`
-/// with a pixel to spare for the antialiased edge. A quad of a moved chunk is not considered,
-/// because the GPU draws it at an offset this does not read.
+/// only a quad that is solid on every pixel of `rect`: a solid fill, an upright transform, a clip
+/// without rounded tests, and bounds that contain `rect` past its corners and its border, with a
+/// pixel to spare for the antialiased edge. A quad of a moved chunk is not considered, because the
+/// GPU draws it at an offset this does not read.
+///
+/// A translucent fill hides nothing, but drawn first it lands on the clear, and drawing it with
+/// no blend at all writes the same pixels as the clear and the blend did. So a translucent quad
+/// is a cover when nothing before it draws in `rect`, and is then drawn replacing.
 pub fn cover(
     scene: &Scene,
     batches: &[Reached],
     rect: Rect<i32, Device>,
-) -> Option<(usize, usize)> {
+) -> Option<(usize, usize, bool)> {
     let mut depth = 0usize;
     let mut found = None;
+    // Whether anything before the quad being looked at draws in `rect`.
+    let mut drawn = false;
     let quads = scene.remap(PrimitiveKind::Quad);
     let provenance = scene.provenance(PrimitiveKind::Quad);
+    let inside =
+        |reach: &Option<Rect<i32, Device>>| reach.is_none_or(|reach| reach.intersects(rect));
     for (index, Reached { batch, reach }) in batches.iter().enumerate() {
         match batch {
             Batch::Group(group) => {
@@ -191,67 +199,116 @@ pub fn cover(
                         depth = depth.saturating_sub(1);
                     }
                 }
+                drawn |= inside(reach);
             }
             Batch::Quads(range) if depth == 0 => {
-                if reach.is_some_and(|reach| !reach.contains_rect(rect)) {
+                if !inside(reach) {
                     continue;
                 }
+                let whole = reach.is_none_or(|reach| reach.contains_rect(rect));
                 let Some(slots) = quads.get(range.clone()) else {
+                    drawn = true;
                     continue;
                 };
                 for (at, &slot) in slots.iter().enumerate() {
                     let moved = provenance
                         .get(slot as usize)
                         .is_some_and(|chunk| scene.chunk_offsets().contains_key(&chunk.revision));
-                    if !moved && covers(scene, slot as usize, rect) {
-                        found = Some((index, at));
+                    if whole && !moved {
+                        match covers(scene, slot as usize, rect) {
+                            Some(true) => found = Some((index, at, false)),
+                            Some(false) if !drawn => found = Some((index, at, true)),
+                            _ => {}
+                        }
                     }
+                    drawn |= moved || reaches(scene, slot as usize, rect);
                 }
             }
-            _ => {}
+            _ => drawn |= inside(reach),
         }
     }
     found
 }
 
-/// Whether the quad at `slot` is opaque on every pixel of `rect`.
-fn covers(scene: &Scene, slot: usize, rect: Rect<i32, Device>) -> bool {
+/// Whether the quad at `slot` may draw in `rect`, read off its bounds where its space is upright.
+fn reaches(scene: &Scene, slot: usize, rect: Rect<i32, Device>) -> bool {
     let Some(quad) = scene.primitives.quads.get(slot) else {
-        return false;
+        return true;
     };
-    if quad.radii.iter().any(|radius| *radius != 0.0)
-        || quad.border.iter().any(|width| *width != 0.0)
-        || quad.fill.kind != PaintKind::Solid as u32
-    {
-        return false;
-    }
-    let opaque = quad
-        .fill
-        .id()
-        .and_then(|id| scene.paints.get(id))
-        .is_some_and(|paint| matches!(paint, Paint::Solid(color) if color.alpha() >= 1.0));
-    if !opaque {
-        return false;
-    }
     let local = Rect::from_corners(
-        Point::new(DevicePx(quad.bounds[0]), DevicePx(quad.bounds[1])),
         Point::new(
-            DevicePx(quad.bounds[0] + quad.bounds[2]),
-            DevicePx(quad.bounds[1] + quad.bounds[3]),
+            DevicePx(quad.bounds[0] - 1.0),
+            DevicePx(quad.bounds[1] - 1.0),
+        ),
+        Point::new(
+            DevicePx(quad.bounds[0] + quad.bounds[2] + 1.0),
+            DevicePx(quad.bounds[1] + quad.bounds[3] + 1.0),
         ),
     );
     let placed = if quad.transform == SpatialId::VIEWPORT.index() {
         local
     } else {
         let Some(matrix) = scene.spatial.resolve_at(quad.transform) else {
-            return false;
+            return true;
         };
+        if !maps_affinely(&matrix) {
+            return true;
+        }
+        zgui_geom::transformed_bounds(&matrix, local)
+    };
+    let rect = Rect::from_corners(
+        Point::new(DevicePx(rect.left() as f32), DevicePx(rect.top() as f32)),
+        Point::new(
+            DevicePx(rect.right() as f32),
+            DevicePx(rect.bottom() as f32),
+        ),
+    );
+    placed.intersection(rect).is_some_and(|met| !met.is_empty())
+}
+
+/// Whether the quad at `slot` paints its one fill colour on every pixel of `rect`, and if so
+/// whether that colour is opaque.
+fn covers(scene: &Scene, slot: usize, rect: Rect<i32, Device>) -> Option<bool> {
+    let quad = scene.primitives.quads.get(slot)?;
+    if quad.fill.kind != PaintKind::Solid as u32 {
+        return None;
+    }
+    let alpha = match quad.fill.id().and_then(|id| scene.paints.get(id)) {
+        Some(Paint::Solid(color)) => color.alpha(),
+        _ => return None,
+    };
+    let [tl_x, tl_y, tr_x, tr_y, br_x, br_y, bl_x, bl_y] = quad.radii;
+    let [top, right, bottom, left] = quad.border;
+    let [x, y, width, height] = quad.bounds;
+    let local = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        Rect::from_corners(
+            Point::new(DevicePx(x0), DevicePx(y0)),
+            Point::new(DevicePx(x1), DevicePx(y1)),
+        )
+    };
+    // Where the shader paints the fill and nothing else: inside the border, and out of the four
+    // corners, whose curve can reach in as far as their radii.
+    let inside = local(x + left, y + top, x + width - right, y + height - bottom);
+    let corners = [
+        local(x, y, x + tl_x, y + tl_y),
+        local(x + width - tr_x, y, x + width, y + tr_y),
+        local(x + width - br_x, y + height - br_y, x + width, y + height),
+        local(x, y + height - bl_y, x + bl_x, y + height),
+    ];
+    let matrix = if quad.transform == SpatialId::VIEWPORT.index() {
+        None
+    } else {
+        let matrix = scene.spatial.resolve_at(quad.transform)?;
         let m = &matrix.columns;
         let upright = m[0][1] == 0.0 && m[1][0] == 0.0 && m[0][0] > 0.0 && m[1][1] > 0.0;
         if !upright || !maps_affinely(&matrix) {
-            return false;
+            return None;
         }
-        zgui_geom::transformed_bounds(&matrix, local)
+        Some(matrix)
+    };
+    let placed = |rect| match &matrix {
+        Some(matrix) => zgui_geom::transformed_bounds(matrix, rect),
+        None => rect,
     };
     // A pixel inside the edge is fully covered, and the edge's antialiasing band is half a pixel.
     let needed = Rect::from_corners(
@@ -264,20 +321,28 @@ fn covers(scene: &Scene, slot: usize, rect: Rect<i32, Device>) -> bool {
             DevicePx(rect.bottom() as f32 + 1.0),
         ),
     );
-    if !placed.contains_rect(needed) {
-        return false;
+    if !placed(inside).contains_rect(needed)
+        || corners.into_iter().any(|corner| {
+            !corner.is_empty()
+                && placed(corner)
+                    .intersection(needed)
+                    .is_some_and(|met| !met.is_empty())
+        })
+    {
+        return None;
     }
     let clip = scene
         .clips
         .resolve_placed(ClipId(quad.clip), &|space| scene.spatial.resolve(space));
     let aabb = clip.aabb;
-    clip.rounded_count == 0
+    let clear = clip.rounded_count == 0
         && clip.dropped == 0
         && clip.mask.is_none()
         && aabb[0] <= rect.left() as f32
         && aabb[1] <= rect.top() as f32
         && aabb[0] + aabb[2] >= rect.right() as f32
-        && aabb[1] + aabb[3] >= rect.bottom() as f32
+        && aabb[1] + aabb[3] >= rect.bottom() as f32;
+    clear.then_some(alpha >= 1.0)
 }
 
 /// The bounds field and the coordinate-system slot of the primitive at `slot` of `kind`'s array.

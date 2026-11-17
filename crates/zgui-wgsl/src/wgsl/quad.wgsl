@@ -58,6 +58,8 @@ struct QuadVarying {
     // Where on the device the clip certainly covers the whole pixel (min then max), so a
     // fragment there reads no clip at all. Empty where that cannot be said once per instance.
     @location(10) @interpolate(flat) clip_safe: vec4<f32>,
+    // A solid fill's colour, read once per instance; zero for any other fill.
+    @location(11) @interpolate(flat) fill_color: vec4<f32>,
 }
 
 // The part of `safe` that is at least half a pixel inside `test` and clear of its corners.
@@ -148,6 +150,10 @@ fn vs_quad(
     out.misc = vec4<u32>(quad.clip, quad.style, quad.transform, bitcast<u32>(quad.shape));
     out.paint_origin = vec2<f32>(quad.paint_origin.x, quad.paint_origin.y);
     out.clip_safe = clip_safe_rect(quad.clip);
+    out.fill_color = vec4<f32>(0.0);
+    if quad.fill.kind == PAINT_SOLID {
+        out.fill_color = rgba_of(paints[quad.fill.index].color);
+    }
     return out;
 }
 
@@ -171,11 +177,47 @@ fn quad_of(in: QuadVarying) -> Quad {
     );
 }
 
+// Every quad, dashed and dotted borders included.
 @fragment
 fn fs_quad(in: QuadVarying) -> @location(0) vec4<f32> {
+    return shade_quad(in, true);
+}
+
+// A frame with no dashed or dotted border. Without the dash code the shader fits Intel's register
+// file at sixteen pixels a thread rather than eight.
+@fragment
+fn fs_quad_solid(in: QuadVarying) -> @location(0) vec4<f32> {
+    return shade_quad(in, false);
+}
+
+fn shade_quad(in: QuadVarying, dashes: bool) -> vec4<f32> {
     // How long one device pixel is in the primitive's own space. Read before any branch, because
     // a derivative is only defined where every fragment of the quad takes it.
     let unit = max(max(fwidth(in.local).x, fwidth(in.local).y), 1e-6);
+    // The inside of a solidly filled box, clear of its border, its corners and its clip's edge:
+    // the bulk of every panel's pixels, answered before anything else is read.
+    if in.paints.x == PAINT_SOLID {
+        let half = in.bounds.zw * 0.5;
+        let from_center = in.local - half;
+        let from_corner = abs(from_center) - half;
+        let left = from_center.x < 0.0;
+        let top = from_center.y < 0.0;
+        let radii = vec2<f32>(
+            select(select(in.radii_bottom.x, in.radii_bottom.z, left), select(in.radii_top.z, in.radii_top.x, left), top),
+            select(select(in.radii_bottom.y, in.radii_bottom.w, left), select(in.radii_top.w, in.radii_top.y, left), top),
+        );
+        let sides = vec2<f32>(
+            select(in.border.y, in.border.w, left),
+            select(in.border.z, in.border.x, top),
+        );
+        let inset = from_corner + max(sides, vec2<f32>(0.0));
+        let in_corner = from_corner.x + radii.x >= 0.0 && from_corner.y + radii.y >= 0.0;
+        let device = device_position(in.position.xy);
+        if max(inset.x, inset.y) < -0.5 * unit && !in_corner
+            && all(device >= in.clip_safe.xy) && all(device <= in.clip_safe.zw) {
+            return in.fill_color;
+        }
+    }
     let quad = quad_of(in);
     // A box with no fill draws nothing inside its border: a panel's rim, a card's stroke. Its quad
     // still covers the whole box, so those pixels are dropped here, on the geometry alone, before
@@ -300,7 +342,7 @@ fn fs_quad(in: QuadVarying) -> @location(0) vec4<f32> {
             border_color = paint_color(quad.stroke, point, paint_origin);
         }
         let style = quad.style & 0xffu;
-        if style != BORDER_SOLID {
+        if dashes && style != BORDER_SOLID {
             border_color *= dash_coverage(
                 quad,
                 style,

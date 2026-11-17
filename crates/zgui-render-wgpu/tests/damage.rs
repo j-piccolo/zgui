@@ -472,8 +472,9 @@ fn a_group_inside_a_damage_rectangle_is_composited_from_what_the_rectangle_holds
     scene.finish(&DamageSet::full());
 
     let mut halves: DamageSet = DamageSet::new();
-    halves.absorb(Rect::new(Point::new(0, 0), Size::new(SIDE, 64)));
-    halves.absorb(Rect::new(Point::new(0, 64), Size::new(SIDE, 64)));
+    halves.absorb_whole(Rect::new(Point::new(0, 0), Size::new(SIDE, 64)));
+    halves.absorb_whole(Rect::new(Point::new(0, 64), Size::new(SIDE, 64)));
+    // Absorbed whole: two halves that touch would otherwise be drawn as one rectangle.
     assert_eq!(halves.len(), 2, "the two halves are disjoint rectangles");
 
     split.draw(&scene, &halves);
@@ -655,8 +656,9 @@ fn a_group_inside_a_filtered_group_is_composited_over_all_of_what_the_filter_rea
 
     // Two disjoint halves, so the boundary between them runs straight through the blurred group.
     let mut halves: DamageSet = DamageSet::new();
-    halves.absorb(Rect::new(Point::new(0, 0), Size::new(SIDE, 64)));
-    halves.absorb(Rect::new(Point::new(0, 64), Size::new(SIDE, 64)));
+    halves.absorb_whole(Rect::new(Point::new(0, 0), Size::new(SIDE, 64)));
+    halves.absorb_whole(Rect::new(Point::new(0, 64), Size::new(SIDE, 64)));
+    // Absorbed whole: two halves that touch would otherwise be drawn as one rectangle.
     assert_eq!(halves.len(), 2, "the two halves are disjoint rectangles");
 
     split.draw(&scene, &halves);

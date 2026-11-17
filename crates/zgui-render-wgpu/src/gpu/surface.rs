@@ -161,7 +161,10 @@ impl ConfiguredSurface {
         );
 
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // Copied into where the device allows it: a copy moves the composed frame for less
+            // than the draw that otherwise does.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | (capabilities.usages & wgpu::TextureUsages::COPY_DST),
             format: formats.surface,
             width: setup.size.width.max(1) as u32,
             height: setup.size.height.max(1) as u32,

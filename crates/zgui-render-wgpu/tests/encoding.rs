@@ -182,7 +182,7 @@ fn compose_into(
             label: Some("test.compose"),
         });
     buffers.upload_frame(gpu, &mut encoder, scene);
-    buffers.finish_uploads();
+    buffers.finish_uploads(gpu, &mut encoder);
     let frame = buffers
         .frame_bind_group(gpu, pipelines.layouts())
         .expect("the block describing the target has just been uploaded");
