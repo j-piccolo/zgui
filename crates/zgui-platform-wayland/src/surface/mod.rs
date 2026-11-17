@@ -192,6 +192,14 @@ impl WaylandSurface {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Records a new extent the application asked for.
+    pub(crate) fn set_wanted(&self, size: Size<CssPx, Css>) {
+        *self
+            .wanted
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = size;
+    }
+
     /// Fractional scaling's objects, for the commit that carries a new extent.
     pub(crate) const fn fractional(&self) -> &Fractional {
         &self.fractional

@@ -28,6 +28,7 @@ pub fn request_size(
         scale
     };
     if let Some(layer) = surface.role().layer() {
+        surface.set_wanted(size);
         layer.set_size(
             size.width.0.round().max(1.0) as u32,
             size.height.0.round().max(1.0) as u32,
@@ -124,8 +125,12 @@ pub fn set_visible(surface: &WaylandSurface, visible: bool) {
     // is a first commit that must carry one, or a surface not stretched across both edges of an
     // axis is a protocol error. The commit goes out now, so the configure arrives before the
     // surface is shown.
+    //
+    // The size asked for is the application's, not the extent the compositor last gave: that one
+    // may be cut to the room a margin left at the output's edge, and asked for again it would
+    // keep the surface that narrow wherever it is placed next.
     let asked = if let Some(layer) = surface.role().layer() {
-        let extent = surface.shared().logical;
+        let extent = surface.wanted();
         layer.set_size(
             extent.width.0.round().max(1.0) as u32,
             extent.height.0.round().max(1.0) as u32,
