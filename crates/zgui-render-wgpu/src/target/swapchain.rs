@@ -159,6 +159,15 @@ impl Presentation {
         }
     }
 
+    /// Whether a texture acquired from this stays good for the next frame: a surface whose swap
+    /// chain is not about to be rebuilt. A resized texture is a new one.
+    pub fn keeps_images(&self) -> bool {
+        match self {
+            Self::Surface(surface) => !surface.rebuild_owed(),
+            Self::Offscreen(_) | Self::Supplied(_) => false,
+        }
+    }
+
     /// Whether a reconfiguration is owed before the next frame.
     pub fn reconfigure_pending(&self) -> bool {
         match self {

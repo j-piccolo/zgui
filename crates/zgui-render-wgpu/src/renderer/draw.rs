@@ -28,8 +28,6 @@ impl Renderer for WgpuRenderer {
     }
 
     fn configure(&mut self, target: RenderTarget) {
-        // A texture of the old swap chain must not outlive the reconfiguration.
-        self.staged = None;
         self.history.forget();
         // A change of scale or of opacity changes what every composed pixel means, and moves no
         // allocation that would otherwise say so. A change of size alone keeps the composed target
@@ -41,6 +39,12 @@ impl Renderer for WgpuRenderer {
         self.held &= self.target == target;
         self.target = target;
         self.resize(target.size);
+        // A texture of the old swap chain must not outlive the rebuild. A swap chain kept as it
+        // was keeps it for the next frame: a hidden surface shown again is configured at the
+        // extent it had, and a texture dropped there would cost a rebuild of its own.
+        if !self.presentation.keeps_images() {
+            self.discard_staged();
+        }
     }
 
     fn target(&self) -> Option<RenderTarget> {
@@ -117,7 +121,7 @@ impl Renderer for WgpuRenderer {
         // Nothing is stalled by doing it early: the wait a rebuild costs is a wait for work still in
         // flight, and a surface that has never been configured, or has stopped being, has none.
         if !self.presentation.is_configured() {
-            self.staged = None;
+            self.discard_staged();
             self.presentation.apply_pending(&self.gpu);
         }
         // The one early exit that keeps its damage, because it records nothing.
@@ -440,10 +444,13 @@ impl Renderer for WgpuRenderer {
             return FrameOutcome::Skipped(SkipReason::Undamaged);
         }
         // A configure, a reallocated target or a lost device since the frame was composed leaves
-        // nothing worth presenting. The next frame draws again, and presents what it draws.
-        if self.full_damage_next || !self.presentation.is_configured() || self.gpu.loss().is_lost()
-        {
-            self.staged = None;
+        // nothing worth presenting. The next frame draws again, and presents what it draws: into
+        // the texture already acquired, unless the swap chain it came from is going.
+        if !self.presentation.is_configured() || self.gpu.loss().is_lost() {
+            self.discard_staged();
+            return FrameOutcome::Skipped(SkipReason::Unacquired);
+        }
+        if self.full_damage_next {
             return FrameOutcome::Skipped(SkipReason::Unacquired);
         }
         if let Some(staged) = self.staged.take() {
@@ -750,6 +757,23 @@ impl WgpuRenderer {
             quads,
         }
         .record(encoder, plan, segments)
+    }
+
+    /// Lets go of the texture acquired for a held frame without presenting it.
+    ///
+    /// A swap chain image counts as acquired until it is presented or the swap chain is rebuilt:
+    /// Vulkan has no way to hand one back, and wgpu's discard does nothing. Each texture dropped
+    /// unpresented leaves the swap chain an image short, and once none is left every acquisition
+    /// times out: a surface hidden and shown again a few times while it held frames stopped
+    /// drawing for good. So a dropped texture owes a rebuild before the next acquisition.
+    fn discard_staged(&mut self) {
+        let acquired = self
+            .staged
+            .take()
+            .is_some_and(|staged| staged.surface_texture.is_some());
+        if acquired {
+            self.presentation.request_reconfigure();
+        }
     }
 
     /// Rebuilds the swap chain if one is owed, and acquires the texture to present into.
