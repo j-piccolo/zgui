@@ -152,8 +152,12 @@ fn create(backends: wgpu::Backends) -> wgpu::Instance {
 /// dispatches, and its own shaders write their counts: zero after an overflow, at most 8 192
 /// otherwise, which is below the dispatch limit. Debug builds keep the check, and
 /// `WGPU_VALIDATION_INDIRECT_CALL=1` enables it in a release build.
+///
+/// Drivers that report no Vulkan conformance version are listed too. wgpu hides them otherwise,
+/// and a development build of Mesa's Asahi driver reports none: on an Apple GPU no window opened.
 pub fn instance_flags() -> wgpu::InstanceFlags {
-    let mut flags = wgpu::InstanceFlags::from_build_config();
+    let mut flags = wgpu::InstanceFlags::from_build_config()
+        | wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER;
     if !cfg!(debug_assertions) {
         flags.remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
     }
