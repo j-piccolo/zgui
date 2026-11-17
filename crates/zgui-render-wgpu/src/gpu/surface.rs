@@ -306,6 +306,11 @@ impl ConfiguredSurface {
         self.reconfigure_pending = true;
     }
 
+    /// Whether the swap chain is rebuilt before the next acquisition, for any reason.
+    pub fn rebuild_owed(&self) -> bool {
+        !self.configured || self.reconfigure_pending || self.pending.is_some()
+    }
+
     /// Whether a reconfiguration is owed before the next frame.
     pub fn reconfigure_pending(&self) -> bool {
         self.reconfigure_pending
