@@ -811,6 +811,73 @@ impl WgpuRenderer {
         (width < texture.width() || height < texture.height()).then_some((width, height))
     }
 
+    /// Copies the composed target onto the image as a texture copy, where the image takes one,
+    /// and answers whether it did.
+    ///
+    /// The draw below is a copy too, a texel per fragment, and Intel's driver moves the same
+    /// pixels for about half as a copy. The formats need only agree but for the encode: the
+    /// draw writes the composed bytes unchanged through either, and so does a copy.
+    fn copy_out(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        limit: Option<(u32, u32)>,
+        missing: Option<&[zgui_geom::Rect<i32, zgui_geom::Device>]>,
+    ) -> bool {
+        let target = view.texture();
+        let source = self.composed.texture();
+        if !target.usage().contains(wgpu::TextureUsages::COPY_DST)
+            || target.format().remove_srgb_suffix() != source.format().remove_srgb_suffix()
+            || target.sample_count() != 1
+        {
+            return false;
+        }
+        let (width, height) = limit.unwrap_or((
+            self.target.size.width.max(1) as u32,
+            self.target.size.height.max(1) as u32,
+        ));
+        let width = width.min(target.width()).min(source.width());
+        let height = height.min(target.height()).min(source.height());
+        let whole = [zgui_geom::Rect::new(
+            zgui_geom::Point::new(0, 0),
+            zgui_geom::Size::new(width as i32, height as i32),
+        )];
+        for rect in missing.unwrap_or(&whole) {
+            let left = rect.origin.x.clamp(0, width as i32) as u32;
+            let top = rect.origin.y.clamp(0, height as i32) as u32;
+            let right = (rect.origin.x + rect.size.width).clamp(0, width as i32) as u32;
+            let bottom = (rect.origin.y + rect.size.height).clamp(0, height as i32) as u32;
+            if right <= left || bottom <= top {
+                continue;
+            }
+            let origin = wgpu::Origin3d {
+                x: left,
+                y: top,
+                z: 0,
+            };
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: source,
+                    mip_level: 0,
+                    origin,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: target,
+                    mip_level: 0,
+                    origin,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: right - left,
+                    height: bottom - top,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        true
+    }
+
     /// Copies the composed target onto whatever is being presented to.
     fn blit(
         &mut self,
@@ -831,6 +898,9 @@ impl WgpuRenderer {
             self.history.presented(image);
         }
         if missing.as_ref().is_some_and(Vec::is_empty) {
+            return;
+        }
+        if self.copy_out(encoder, view, limit, missing.as_deref()) {
             return;
         }
         let kind = if undo {
