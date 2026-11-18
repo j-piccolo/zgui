@@ -3,6 +3,7 @@
 use smithay_client_toolkit::globals::GlobalData;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
 use smithay_client_toolkit::reexports::client::{Dispatch, QueueHandle};
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
@@ -20,6 +21,8 @@ pub struct Extras {
     pub fractional_scale: Option<WpFractionalScaleManagerV1>,
     /// `wp_viewporter`: the mapping from a buffer's extent to the extent it appears at.
     pub viewporter: Option<WpViewporter>,
+    /// `ext_background_effect_manager_v1`: blur behind a surface.
+    pub background_effect: Option<ExtBackgroundEffectManagerV1>,
 }
 
 impl Extras {
@@ -40,6 +43,7 @@ impl Extras {
         Self {
             fractional_scale,
             viewporter,
+            background_effect: bind(globals, qh),
         }
     }
 
