@@ -2,6 +2,7 @@
 
 pub mod a11y;
 pub mod chrome;
+pub mod effect;
 pub mod fractional;
 mod handles;
 pub mod region;
@@ -60,6 +61,8 @@ pub struct Links {
     pub waker: Arc<dyn zgui_platform::Waker>,
     /// The shell a pop-up's later requests are made against.
     pub shell: Arc<crate::surface::role::xdg::XdgShell>,
+    /// Where a surface asks for blur behind it, when the compositor has that.
+    pub effects: Option<wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1>,
 }
 
 impl core::fmt::Debug for Links {
@@ -85,6 +88,8 @@ pub struct WaylandSurface {
     role: Role,
     /// Fractional scaling, when the compositor offers it.
     fractional: Fractional,
+    /// Blur behind it, when asked for.
+    effect: effect::Effect,
     /// Everything about it that changes.
     shared: Mutex<Shared>,
     /// A redraw asked for from anywhere, waiting to be pulled into the pacer.
@@ -136,6 +141,7 @@ impl WaylandSurface {
             id,
             role,
             fractional,
+            effect: effect::Effect::new(links.effects),
             shared: Mutex::new(Shared::new()),
             asked: AtomicBool::new(false),
             mapped: AtomicBool::new(false),
@@ -254,15 +260,32 @@ impl WaylandSurface {
         crate::surface::role::layer::apply(layer, &placement, extent);
     }
 
-    /// Sends the input and opaque regions asked for since the last send, right before a commit.
+    /// Sends the input, opaque and blur regions asked for since the last send, right before a
+    /// commit.
     ///
-    /// Nothing is committed here: both regions are state of the surface that the next commit
+    /// Nothing is committed here: each region is state of the surface that the next commit
     /// applies, and that commit carries the frame drawn for them.
     pub(crate) fn send_regions(&self) {
-        let (input, opaque) = {
+        let (input, opaque, blur) = {
             let mut shared = self.shared();
-            (shared.input_owed.take(), shared.opaque_owed.take())
+            (
+                shared.input_owed.take(),
+                shared.opaque_owed.take(),
+                shared.blur_owed.take(),
+            )
         };
+        if let Some(blur) = blur
+            && let Some(effect) = self.effect.object(&self.qh, self.wl_surface())
+        {
+            match blur {
+                Some(rects) if !rects.is_empty() => {
+                    let region = self.region_of(&rects, region::outward);
+                    effect.set_blur_region(Some(&region));
+                    region.destroy();
+                }
+                _ => effect.set_blur_region(None),
+            }
+        }
         let wl = self.wl_surface();
         if let Some(input) = input {
             match input {
@@ -508,6 +531,7 @@ impl Drop for WaylandSurface {
         // against a surface that has gone is answered against nothing.
         self.a11y.close();
         self.fractional.release();
+        self.effect.release();
     }
 }
 
@@ -693,6 +717,11 @@ impl Surface for WaylandSurface {
         self.shared().input_owed = Some(region.map(<[_]>::to_vec));
         self.request_redraw();
         Ok(())
+    }
+
+    fn set_blur_region(&self, region: Option<&[Rect<CssPx, Css>]>) {
+        self.shared().blur_owed = Some(region.map(<[_]>::to_vec));
+        Surface::request_redraw(self);
     }
 
     fn set_opaque_region(&self, region: Option<&[Rect<CssPx, Css>]>) {

@@ -268,6 +268,7 @@ impl WaylandState {
             ping: self.live.waker.ping(),
             seat: std::sync::Arc::clone(&self.link),
             shell: std::sync::Arc::clone(&self.xdg),
+            effects: self.extras.background_effect.clone(),
             waker: std::sync::Arc::clone(&self.live.waker)
                 as std::sync::Arc<dyn zgui_platform::Waker>,
         }
