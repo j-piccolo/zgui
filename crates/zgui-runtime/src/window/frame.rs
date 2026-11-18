@@ -1701,6 +1701,9 @@ impl Window {
             // rather than the one being composed, which is the same reading the damage rectangles
             // for those marks were absorbed under.
             let placements = self.host.placements();
+            // The walk descends where the frame redraws and where a moved box was last composed.
+            let mut walked = self.damage;
+            walked.absorb_set(&std::mem::take(&mut self.walk_reach));
             let input = PaintInput {
                 scale: self.scale,
                 capabilities,
@@ -1749,7 +1752,7 @@ impl Window {
                 // Named in the latency trace, so the renderer's per-draw notes can be put on the
                 // elements that drew them.
                 record_chunks: zgui_profile::latency::listening(),
-                ..PaintInput::new(&layout, &self.damage)
+                ..PaintInput::new(&layout, &walked)
             };
             zgui_profile::latency::note_with("d.postexpand", || {
                 format!(

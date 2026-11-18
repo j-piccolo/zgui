@@ -36,6 +36,9 @@ pub(crate) struct Writing<'a> {
     pub layout: &'a LayoutStore,
     /// How many device pixels one CSS pixel is.
     pub scale: f32,
+    /// Where the emit walk has to descend this frame without anything there being drawn again:
+    /// the rectangles the moved boxes' fragments were last composed at. See [`Writing::reach`].
+    pub reach: DamageSet,
     /// Where every box moved from and to, and the ink of every box recoloured, which is what the
     /// frame has to draw again.
     ///
@@ -54,8 +57,17 @@ impl Placer for Writing<'_> {
         };
         let placement = self.scene.apply_place(space, matrix);
         if placement.written {
+            if placement.damage.is_empty() {
+                // Nothing moved, and nothing has to be emitted again: the scene holds where it is
+                // drawn for the write that next moves it.
+                self.scene.note_unreached(space);
+                return Placed::Written;
+            }
             self.damage.absorb_set(&placement.damage);
-            self.reach(node);
+            match placement.drawn {
+                Some(drawn) => self.reach.absorb(drawn),
+                None => self.reach(node),
+            }
             return Placed::Written;
         }
         // Refused: either nothing had been declared for this coordinate system yet, or the box was
@@ -72,6 +84,17 @@ impl Placer for Writing<'_> {
         self.withdraw(node);
     }
 
+    fn held(&mut self, node: NodeKey) {
+        if let Some(space) = self
+            .layout
+            .boxes_of(node)
+            .first()
+            .and_then(|key| self.scene.spatial.of(PropertyOwner::of(*key)))
+        {
+            self.scene.note_unreached(space);
+        }
+    }
+
     fn recolor(&mut self, node: NodeKey, values: &AnimOverride) -> bool {
         self.write_colors(node, values)
     }
@@ -84,12 +107,18 @@ impl Placer for Writing<'_> {
 impl Writing<'_> {
     /// Keeps the box reachable by the walk that re-emits it.
     ///
-    /// The emit walk decides whether to descend into a box by intersecting the damage with the
-    /// device rectangle its fragments recorded — and that rectangle is written by the pass that
-    /// composes them, which is the pass a write exists to avoid running. So it says where the box
-    /// was when it was last composed, and a set holding only where the box came from and where it
-    /// went stops reaching it after the first write. The recorded rectangle goes into the set for
-    /// that reason and no other: nothing is redrawn there that was not already right.
+    /// The emit walk decides whether to descend into a box by intersecting what it is gated on
+    /// with the device rectangle its fragments recorded — and that rectangle is written by the
+    /// pass that composes them, which is the pass a write exists to avoid running. So it says where
+    /// the box was when it was last composed, and a set holding only where the box came from and
+    /// where it went stops reaching it after the first write. The walk has to reach it on every
+    /// frame of the movement, a still one too, because the next write finds where the box is
+    /// drawn among the primitives this frame emits.
+    ///
+    /// It goes into [`Writing::reach`] and not the damage: nothing is redrawn there that was not
+    /// already right, and a slid panel's recorded rectangle is its whole list, clipped or not.
+    /// Where the display list says where the box was drawn, that is reached instead, and the rows a
+    /// clip hides are not walked at all.
     fn reach(&mut self, node: NodeKey) {
         let Some(box_key) = self.layout.boxes_of(node).first() else {
             return;
@@ -97,7 +126,7 @@ impl Writing<'_> {
         for frag in self.layout.fragments_of_box(*box_key) {
             if let Some(fragment) = self.layout.fragment(*frag) {
                 let ink = fragment.on_device_in(fragment.subtree_ink, &self.scene.spatial);
-                self.damage.absorb(whole(ink));
+                self.reach.absorb(whole(ink));
             }
         }
     }
