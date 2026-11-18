@@ -98,6 +98,9 @@ impl PlatformCx for WaylandCx<'_> {
 
     fn unlock_session(&self) {
         self.state.locks.unlock();
+        // Sent now. An application that exits right after it unlocks ends its loop before the
+        // next flush, and the session then stays locked with no client to unlock it.
+        let _ = self.state.conn.flush();
     }
 
     fn color_scheme(&self) -> Option<ColorScheme> {
