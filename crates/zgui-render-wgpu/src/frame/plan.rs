@@ -396,7 +396,12 @@ fn plan_rect(
                 );
                 builder.defer();
             }
-            _ => builder.draw(PlannedDraw::Batch(batch.clone())),
+            _ => {
+                builder.draw(PlannedDraw::Batch(batch.clone()));
+                if zgui_profile::latency::listening() {
+                    builder.ink(reach::ink(scene, batch, scissor));
+                }
+            }
         }
     }
 

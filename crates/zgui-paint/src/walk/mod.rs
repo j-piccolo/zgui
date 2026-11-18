@@ -123,6 +123,12 @@ pub struct PaintInput<'a> {
     /// would take the oracle with it, so the release tree would be asserting nothing where the
     /// debug tree asserts the whole thing.
     pub record_emitted: bool,
+    /// Whether to report the chunk revision each freshly encoded fragment was given, and its node.
+    ///
+    /// A primitive drawn out of a chunk carries the chunk's revision to the renderer, so a profiler
+    /// that has these pairs can name the element behind every primitive a draw covers. Off by
+    /// default: it costs a push per encoded fragment.
+    pub record_chunks: bool,
     /// Whether every replayed range is checked against the cache its rasters live in.
     ///
     /// The check is what catches a range drawing a raster that has been freed underneath it — see
@@ -167,6 +173,7 @@ impl<'a> PaintInput<'a> {
             scale: 1.0,
             scrollbars: crate::emit::scrollbar::default_paint(),
             record_emitted: false,
+            record_chunks: false,
             verify_replays: zgui_layout::invariants::enabled(),
             placements: None,
         }
@@ -200,6 +207,25 @@ pub struct PaintReport {
     /// A caller damages them and asks for a frame, so each is encoded again until its exact layer
     /// stands. An empty list asks for nothing.
     pub layers_owed: Vec<Rect<i32, Device>>,
+    /// The chunk each fragment encoded this frame was given, when [`PaintInput::record_chunks`]
+    /// was on.
+    pub chunks: Vec<ChunkReport>,
+    /// Why each group that took a target did, when [`PaintInput::record_chunks`] was on.
+    pub group_whys: Vec<group::GroupWhy>,
+}
+
+/// The chunk one fragment was encoded into, and what the fragment paints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChunkReport {
+    /// The chunk's revision, as [`zgui_scene::ChunkSlot::revision`] gives it for every primitive
+    /// drawn out of the chunk.
+    pub revision: u64,
+    /// The node the fragment was laid out for, or for a fragment with none (a line box) its
+    /// nearest ancestor's.
+    pub node: Option<NodeKey>,
+    /// What kind of fragment it is: `box`, `line`, `text`, `replaced`, `vector`, `custom` or
+    /// `scrollbar`.
+    pub kind: &'static str,
 }
 
 /// The vector raster paths selected for one freshly encoded element.
@@ -1128,11 +1154,45 @@ impl Pass<'_, '_> {
                     },
                     self.input.resources,
                 );
+                if self.input.record_chunks
+                    && let Some((revision, _)) = self.painter.cache.chunk(fragment.key)
+                {
+                    self.report.chunks.push(ChunkReport {
+                        revision,
+                        node: owning_node(self.input.store, fragment),
+                        kind: kind_name(&fragment.kind),
+                    });
+                }
             }
         }
         if self.input.record_emitted {
             self.report.emitted.push(frag);
         }
+    }
+}
+
+/// The node `fragment` was laid out for, or its nearest ancestor's: a line box has no node of its
+/// own, and its text belongs to the block that holds it.
+fn owning_node(store: &LayoutStore, fragment: &Fragment) -> Option<NodeKey> {
+    let mut at = fragment;
+    loop {
+        if let Some(node) = at.node {
+            return Some(node);
+        }
+        at = store.fragment(at.parent?)?;
+    }
+}
+
+/// The name [`ChunkReport::kind`] gives a fragment's kind.
+fn kind_name(kind: &FragmentKind) -> &'static str {
+    match kind {
+        FragmentKind::Box => "box",
+        FragmentKind::Line { .. } => "line",
+        FragmentKind::TextRun { .. } => "text",
+        FragmentKind::Replaced { .. } => "replaced",
+        FragmentKind::Vector => "vector",
+        FragmentKind::Custom => "custom",
+        FragmentKind::Scrollbar { .. } => "scrollbar",
     }
 }
 
@@ -1271,6 +1331,11 @@ impl stacking::Visitor for Pass<'_, '_> {
                 );
                 self.open.push((key, boundary));
                 self.report.groups += 1;
+                if self.input.record_chunks {
+                    self.report
+                        .group_whys
+                        .push(group::explain(store, key, &style, fragment));
+                }
             }
         }
         // A group's target is transparent, so per-channel text coverage inside it is meaningless

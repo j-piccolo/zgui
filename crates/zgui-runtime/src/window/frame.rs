@@ -706,6 +706,8 @@ impl Window {
             probe.frame_ended(self);
         }
 
+        // What the frame did, beside how long it took.
+        zgui_profile::latency::note_counters();
         zgui_profile::latency::note_with("f.end", || {
             format!(
                 "{outcome:?} another={needs_another_frame} owed={owed} \
@@ -1735,6 +1737,9 @@ impl Window {
                 // A full set means the surface and nothing more. Without the bound, the walk visits
                 // every fragment of the document, also the rows of a long scroll container.
                 surface: Some(zgui_geom::Rect::new(zgui_geom::Point::new(0, 0), viewport)),
+                // Named in the latency trace, so the renderer's per-draw notes can be put on the
+                // elements that drew them.
+                record_chunks: zgui_profile::latency::listening(),
                 ..PaintInput::new(&layout, &self.damage)
             };
             zgui_profile::latency::note_with("d.postexpand", || {
@@ -1746,9 +1751,17 @@ impl Window {
                     self.damage.rects()
                 )
             });
+            // After the damage grew: what the frame draws again, against what its shift moved.
+            if let Some(moved) = shift {
+                zgui_profile::latency::note_with("shift.acct", || {
+                    super::scroll::shift::account(&self.damage, moved.port, moved.port)
+                });
+            }
             mark("p.emit");
             let before = glyph_counts();
             let report = self.painter.emit(&input, &mut self.scene);
+            crate::window::owners::note(&document, &report.chunks);
+            crate::window::owners::note_groups(&document, &report.group_whys);
             vector_report = report.vector_routes;
             self.layers_owed = report.layers_owed;
             let after = glyph_counts();

@@ -24,6 +24,7 @@
 //! 5. **Is the port the container's alone, and opaque?** Asked of the document, in
 //!    [`zgui_paint::shiftable`].
 
+use zgui_bits::DamageSet;
 use zgui_geom::{Device, Rect};
 use zgui_paint::shiftable;
 use zgui_render::ScrollShift;
@@ -37,6 +38,8 @@ use crate::window::Window;
 /// framework's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Refused {
+    /// `ZGUI_SCROLL_SHIFT=0`: every shift refused, so one binary can be measured with and without.
+    Off,
     /// The renderer keeps no composed target to move pixels within.
     NoComposedTarget,
     /// Nothing scrolled, or more than one thing did.
@@ -50,6 +53,49 @@ pub(crate) enum Refused {
     Document(shiftable::Refusal),
 }
 
+/// Whether shifts are allowed: not when `ZGUI_SCROLL_SHIFT` is `0`.
+fn allowed() -> bool {
+    static ALLOWED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ALLOWED.get_or_init(|| std::env::var_os("ZGUI_SCROLL_SHIFT").is_none_or(|value| value != "0"))
+}
+
+/// What a shifted frame moved and what it drew again, as the trace's `shift.acct` note, in device
+/// pixels: the whole `port`; what was `moved` (copied); what was `kept` (moved, and not drawn over
+/// by the frame's damage); what was `redrawn` in the port; the frame's damage rectangles, and the
+/// damage outside the port. Overlapping damage rectangles count once each, so `redrawn` is an
+/// upper bound and `kept` a lower one.
+pub(crate) fn account(
+    damage: &DamageSet,
+    port: Rect<i32, Device>,
+    moved: Rect<i32, Device>,
+) -> String {
+    let area = |rect: Rect<i32, Device>| {
+        i64::from(rect.size.width.max(0)) * i64::from(rect.size.height.max(0))
+    };
+    let inside = |within: Rect<i32, Device>| -> i64 {
+        if damage.is_full() {
+            return area(within);
+        }
+        damage
+            .rects()
+            .iter()
+            .filter_map(|rect| rect.intersection(within))
+            .map(area)
+            .sum::<i64>()
+            .min(area(within))
+    };
+    let redrawn = inside(port);
+    let total = damage.area().unwrap_or_else(|| area(port));
+    format!(
+        "port={} moved={} kept={} redrawn={redrawn} rects={} outside={}",
+        area(port),
+        area(moved),
+        area(moved) - inside(moved),
+        damage.rects().len(),
+        (total - redrawn).max(0),
+    )
+}
+
 impl Window {
     /// This frame's scroll as a movement of pixels, when it is one.
     ///
@@ -59,6 +105,9 @@ impl Window {
         &self,
         viewport: zgui_geom::Size<i32, Device>,
     ) -> Result<ScrollShift, Refused> {
+        if !allowed() {
+            return Err(Refused::Off);
+        }
         if !self.renderer.shifts_composed_pixels() {
             return Err(Refused::NoComposedTarget);
         }

@@ -172,6 +172,7 @@ impl UploadBelt {
                 return 0;
             }
         }
+        zgui_profile::latency::note_with("gpu.copy", || format!("site=upload bytes={size}"));
         encoder.copy_buffer_to_buffer(&chunk.buffer, offset, target, target_offset, size);
 
         zgui_profile::counter::add(zgui_profile::Counter::BytesUploaded, size);
@@ -283,6 +284,9 @@ impl UploadBelt {
                     .copy_from_slice(&bytes[source..source + row as usize]);
             }
         }
+        zgui_profile::latency::note_with("gpu.copy", || {
+            format!("site=texture-upload bytes={}", bytes.len())
+        });
         encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
                 buffer: &chunk.buffer,

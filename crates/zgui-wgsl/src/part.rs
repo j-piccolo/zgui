@@ -42,6 +42,32 @@ pub const PART_NAMES: [&str; 28] = [
 /// Panics when nothing is called `name`. Every caller names a part out of a table in this crate,
 /// so an unknown name is a typo in one of those tables rather than anything a consumer can cause.
 pub fn part(name: &str) -> &'static str {
+    if let Some(text) = from_disk(name) {
+        return text;
+    }
+    built_in(name)
+}
+
+/// `ZGUI_WGSL_DIR=<dir>`: a part read from `<dir>/<name>.wgsl` where that file exists, so a shader
+/// change is tried without rebuilding (with the pipeline cache pointed somewhere empty, or the
+/// cached pipeline is used). Each part is read once and kept for the process.
+fn from_disk(name: &str) -> Option<&'static str> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static READ: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let dir = std::env::var_os("ZGUI_WGSL_DIR")?;
+    let mut read = READ.get_or_init(Default::default).lock().ok()?;
+    if let Some(text) = read.get(name) {
+        return Some(text);
+    }
+    let text =
+        std::fs::read_to_string(std::path::Path::new(&dir).join(format!("{name}.wgsl"))).ok()?;
+    let text: &'static str = Box::leak(text.into_boxed_str());
+    read.insert(name.to_owned(), text);
+    Some(text)
+}
+
+fn built_in(name: &str) -> &'static str {
     match name {
         "blit" => include_str!("wgsl/blit.wgsl"),
         "blur" => include_str!("wgsl/blur.wgsl"),

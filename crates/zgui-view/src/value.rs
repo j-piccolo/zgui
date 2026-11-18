@@ -93,6 +93,12 @@ pub enum ReactiveValue<T> {
     Dynamic(Rc<dyn Fn() -> T>),
 }
 
+/// A dynamic value over `compute`, filed under `name` for the trace (see `binding::origin`).
+fn named<T>(compute: Rc<dyn Fn() -> T>, name: &'static str) -> ReactiveValue<T> {
+    crate::binding::origin::file(Rc::as_ptr(&compute).cast::<()>() as usize, name);
+    ReactiveValue::Dynamic(compute)
+}
+
 impl<T: Clone> ReactiveValue<T> {
     /// The value now.
     ///
@@ -117,7 +123,8 @@ impl<T> ReactiveValue<T> {
 
     /// Builds a dynamic value from a closure.
     pub fn derive(compute: impl Fn() -> T + 'static) -> Self {
-        Self::Dynamic(Rc::new(compute))
+        let name = core::any::type_name_of_val(&compute);
+        named(Rc::new(compute), name)
     }
 }
 
@@ -302,19 +309,22 @@ where
     F: Fn() -> Option<crate::NodeRef> + 'static,
 {
     fn into_reactive_value(self) -> ReactiveValue<zgui_vocab::NodeId> {
-        ReactiveValue::Dynamic(Rc::new(move || {
-            zgui_vocab::NodeId(
-                self()
-                    .and_then(|node| node.get())
-                    .map_or(0, crate::NodeId::as_u64),
-            )
-        }))
+        named(
+            Rc::new(move || {
+                zgui_vocab::NodeId(
+                    self()
+                        .and_then(|node| node.get())
+                        .map_or(0, crate::NodeId::as_u64),
+                )
+            }),
+            core::any::type_name::<F>(),
+        )
     }
 }
 
 impl<T, F: Fn() -> T + 'static> IntoReactiveValue<T, marker::Derived> for F {
     fn into_reactive_value(self) -> ReactiveValue<T> {
-        ReactiveValue::Dynamic(Rc::new(self))
+        named(Rc::new(self), core::any::type_name::<F>())
     }
 }
 
@@ -324,7 +334,7 @@ where
     F: Fn() -> &'static str + 'static,
 {
     fn into_reactive_value(self) -> ReactiveValue<zgui_vocab::SharedString> {
-        ReactiveValue::Dynamic(Rc::new(move || self().into()))
+        named(Rc::new(move || self().into()), core::any::type_name::<F>())
     }
 }
 
@@ -334,7 +344,7 @@ where
     F: Fn() -> String + 'static,
 {
     fn into_reactive_value(self) -> ReactiveValue<zgui_vocab::SharedString> {
-        ReactiveValue::Dynamic(Rc::new(move || self().into()))
+        named(Rc::new(move || self().into()), core::any::type_name::<F>())
     }
 }
 
@@ -344,7 +354,10 @@ where
     F: Fn() -> &'static str + 'static,
 {
     fn into_reactive_value(self) -> ReactiveValue<String> {
-        ReactiveValue::Dynamic(Rc::new(move || self().to_owned()))
+        named(
+            Rc::new(move || self().to_owned()),
+            core::any::type_name::<F>(),
+        )
     }
 }
 
@@ -354,7 +367,7 @@ where
     T: Clone + 'static,
 {
     fn into_reactive_value(self) -> ReactiveValue<T> {
-        ReactiveValue::Dynamic(Rc::new(move || self.get()))
+        named(Rc::new(move || self.get()), core::any::type_name::<G>())
     }
 }
 

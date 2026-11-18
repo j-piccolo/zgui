@@ -113,6 +113,8 @@ pub fn apply(
     }
     let staged = scratch.as_ref().expect("just allocated");
 
+    note_copy("shift-stage", from);
+    note_copy("shift-unstage", from);
     encoder.copy_texture_to_texture(
         texel_copy(composed.texture(), from),
         wgpu::TexelCopyTextureInfo {
@@ -134,6 +136,17 @@ pub fn apply(
         extent,
     );
     true
+}
+
+/// Notes a copy of `read` in the latency trace, in issue order beside the pass draws.
+fn note_copy(site: &'static str, read: Rect<i32, Device>) {
+    zgui_profile::latency::note_with("gpu.copy", || {
+        format!(
+            "site={site} px={} box={}",
+            read.size.width as i64 * read.size.height as i64,
+            crate::frame::pass::rect_note(read)
+        )
+    });
 }
 
 /// One end of a copy, at a rectangle's origin.

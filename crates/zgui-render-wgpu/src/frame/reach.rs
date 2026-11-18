@@ -81,6 +81,87 @@ fn reach_of(scene: &Scene, spaces: &mut Spaces<'_>, batch: &Batch) -> Option<Rec
     ))
 }
 
+/// What one instanced batch covers inside a pass's scissor, for the latency trace: the device
+/// pixels its instances cover, counted once per instance, the box around them, and the chunks
+/// they came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ink {
+    /// Device pixels covered, summed over the instances, so overlap counts each time.
+    pub pixels: u64,
+    /// The box around every instance's covered part.
+    pub covered: Rect<i32, Device>,
+    /// The pixels of `pixels` each chunk's instances cover, as `(revision, pixels)`, largest
+    /// first. Revision zero is content drawn outside any chunk.
+    pub owners: Vec<(u64, u64)>,
+}
+
+/// What `batch` covers inside `scissor`, or `None` for a batch that is not instanced or not
+/// bounded on the device.
+///
+/// Only the latency trace asks, so it resolves its own coordinate systems instead of sharing the
+/// frame's: a traced frame pays for the walk, an untraced one never makes it.
+pub fn ink(scene: &Scene, batch: &Batch, scissor: Rect<i32, Device>) -> Option<Ink> {
+    let (kind, range) = match batch {
+        Batch::Quads(range) => (PrimitiveKind::Quad, range),
+        Batch::Shaded { range, .. } => (PrimitiveKind::Shaded, range),
+        Batch::Shadows(range) => (PrimitiveKind::Shadow, range),
+        Batch::Decorations(range) => (PrimitiveKind::Decoration, range),
+        Batch::MonoSprites { range, .. } => (PrimitiveKind::MonoSprite, range),
+        Batch::SubpixelSprites { range, .. } => (PrimitiveKind::SubpixelSprite, range),
+        Batch::ColorSprites { range, .. } => (PrimitiveKind::ColorSprite, range),
+        _ => return None,
+    };
+    let mut spaces = Spaces::new(scene);
+    let (cut_left, cut_top) = (scissor.origin.x, scissor.origin.y);
+    let cut_right = cut_left + scissor.size.width;
+    let cut_bottom = cut_top + scissor.size.height;
+    let provenance = scene.provenance(kind);
+    let mut pixels = 0u64;
+    let mut owners: Vec<(u64, u64)> = Vec::new();
+    let mut low = (i32::MAX, i32::MAX);
+    let mut high = (i32::MIN, i32::MIN);
+    for &slot in scene.remap(kind).get(range.clone())? {
+        let (bounds, space) = geometry(scene, kind, slot as usize)?;
+        let local = Rect::from_corners(
+            Point::new(DevicePx(bounds[0]), DevicePx(bounds[1])),
+            Point::new(
+                DevicePx(bounds[0] + bounds[2]),
+                DevicePx(bounds[1] + bounds[3]),
+            ),
+        );
+        let placed = spaces.on_device(space, local)?;
+        let left = (placed.left().0.floor() as i32).max(cut_left);
+        let top = (placed.top().0.floor() as i32).max(cut_top);
+        let right = (placed.right().0.ceil() as i32).min(cut_right);
+        let bottom = (placed.bottom().0.ceil() as i32).min(cut_bottom);
+        if right <= left || bottom <= top {
+            continue;
+        }
+        let area = (right - left) as u64 * (bottom - top) as u64;
+        pixels += area;
+        let revision = provenance
+            .get(slot as usize)
+            .map_or(0, |chunk| chunk.revision);
+        match owners.iter_mut().find(|(owner, _)| *owner == revision) {
+            Some((_, owned)) => *owned += area,
+            None => owners.push((revision, area)),
+        }
+        low = (low.0.min(left), low.1.min(top));
+        high = (high.0.max(right), high.1.max(bottom));
+    }
+    let covered = if pixels == 0 {
+        Rect::from_corners(Point::new(cut_left, cut_top), Point::new(cut_left, cut_top))
+    } else {
+        Rect::from_corners(Point::new(low.0, low.1), Point::new(high.0, high.1))
+    };
+    owners.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    Some(Ink {
+        pixels,
+        covered,
+        owners,
+    })
+}
+
 /// The bounds field and the coordinate-system slot of the primitive at `slot` of `kind`'s array.
 fn geometry(scene: &Scene, kind: PrimitiveKind, slot: usize) -> Option<([f32; 4], u32)> {
     let primitives = &scene.primitives;

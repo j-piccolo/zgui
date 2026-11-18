@@ -245,6 +245,9 @@ impl Renderer for WgpuRenderer {
         };
         zgui_profile::latency::mark("r.encoder");
         let mut encoder = self.frame_encoder();
+        if let Some(timer) = &mut self.timer {
+            timer.open_span(&mut encoder);
+        }
         // First of all: a target reallocated by a resize receives the picture of the one it
         // replaced, which the shift below and every pass after it build on.
         if let Some(carried) = self.composed.carry(&mut encoder) {
@@ -252,7 +255,13 @@ impl Renderer for WgpuRenderer {
         }
         // Before anything this frame draws, and after nothing: the passes below clear and redraw
         // each damage rectangle, and the pixels this moves are the ones outside them.
-        if let Some(shift) = self.pending_shift.take() {
+        let pending = self.pending_shift.take();
+        let shift_timed = pending.and_then(|_| {
+            self.timer
+                .as_mut()
+                .and_then(|timer| timer.open(&mut encoder, TimedWork::Shift))
+        });
+        if let Some(shift) = pending {
             let moved = crate::frame::shift::apply(
                 &self.gpu,
                 &mut encoder,
@@ -262,8 +271,18 @@ impl Renderer for WgpuRenderer {
             );
             zgui_profile::latency::note("r.shift", format!("by={:?} moved={moved}", shift.by));
         }
+        if let Some(queries) = shift_timed {
+            queries.close(&mut encoder);
+        }
         zgui_profile::latency::mark("r.buffers");
+        let uploads_timed = self
+            .timer
+            .as_mut()
+            .and_then(|timer| timer.open(&mut encoder, TimedWork::Uploads));
         let uploaded = self.buffers.upload_frame(&self.gpu, &mut encoder, scene);
+        if let Some(queries) = uploads_timed {
+            queries.close(&mut encoder);
+        }
         let upload_allocations = self.buffers.upload_allocations();
         self.buffers.finish_uploads();
         if upload_allocations == 0 {
@@ -321,6 +340,7 @@ impl Renderer for WgpuRenderer {
             let limit = self.blit_limit(&presented);
             self.blit(&mut encoder, view, formats.blit_undoes_srgb(), limit);
             draw_calls += 1;
+            zgui_profile::latency::mark("r.blit");
         }
         self.submit_frame(encoder);
         let acquisition = presented.acquisition;
@@ -663,11 +683,19 @@ impl WgpuRenderer {
     }
 
     /// Submits a frame's encoder, with the timing and arena bookkeeping that follows a submission.
+    ///
+    /// Each step is marked for the trace: wgpu-core replays a frame's recorded passes into the
+    /// driver's command buffers in `finish`, so the driver's share of a frame's CPU time lands
+    /// there, and the submit after it is the kernel's.
     fn submit_frame(&mut self, mut encoder: wgpu::CommandEncoder) {
         if let Some(timer) = &mut self.timer {
             timer.finish(&mut encoder);
+            zgui_profile::latency::mark("r.resolve");
         }
-        self.gpu.queue().submit([encoder.finish()]);
+        let commands = encoder.finish();
+        zgui_profile::latency::mark("r.finish");
+        self.gpu.queue().submit([commands]);
+        zgui_profile::latency::mark("r.submit");
         if let Some(timer) = &mut self.timer {
             timer.submitted();
         }
@@ -801,9 +829,26 @@ impl WgpuRenderer {
         pass.set_bind_group(0, &self.composed_binding, &[]);
         // A cropping swap chain can be larger than the frame. Only the frame's extent is shown, so
         // only that is copied, and nothing reads past the composed target.
+        let mut drawn = zgui_geom::Rect::new(
+            zgui_geom::Point::new(0, 0),
+            zgui_geom::Size::new(self.target.size.width, self.target.size.height),
+        );
         if let Some((width, height)) = limit {
             pass.set_scissor_rect(0, 0, width, height);
+            drawn = zgui_geom::Rect::new(
+                zgui_geom::Point::new(0, 0),
+                zgui_geom::Size::new(width as i32, height as i32),
+            );
         }
         pass.draw(0..4, 0..1);
+        // Noted as `gpu.draw` like every pass draw, so a driver's per-draw timings stay in step.
+        let fs = kind.fragment_entry();
+        zgui_profile::latency::note_with("gpu.draw", || {
+            let at = crate::frame::pass::rect_note(drawn);
+            format!(
+                "fs={fs} n=1 target=surface scissor={at} px={} box={at}",
+                drawn.size.width as i64 * drawn.size.height as i64
+            )
+        });
     }
 }
