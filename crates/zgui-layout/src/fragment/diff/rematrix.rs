@@ -19,7 +19,7 @@ use zgui_scene::Content;
 
 use crate::fragment::diff::damage::{overlaps, pairwise_disjoint};
 use crate::fragment::diff::dirty::FrameDirty;
-use crate::fragment::diff::{Folded, Pass};
+use crate::fragment::diff::{Folded, Pass, draws_unseen_shapes, paints_nothing_itself};
 use crate::fragment::{FragKey, FragmentFlags, transform};
 
 /// Whether `matrix` keeps every rectangle upright and the right way round.
@@ -123,6 +123,10 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
         // The box's own piece is its ink; every later piece is a piece of the subtree, exactly as
         // the composing walk folds them.
         let mut ink = Rect::ZERO;
+        // What the box itself paints, for the overlap test: nothing for a box that paints
+        // nothing, as the composing walk measures it.
+        let mut own_paint = Rect::ZERO;
+        let mut draws_unseen = false;
         let mut inks: Vec<Rect<DevicePx, Device>> = Vec::new();
         let count = self.store.fragments_of_box(key).len();
         for position in 0..count {
@@ -137,8 +141,13 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
                 Some(matrix) => transform::transformed_bounds(&matrix, fragment.local_ink),
                 None => fragment.local_ink,
             };
+            let paints = !paints_nothing_itself(fragment.kind, fragment.flags);
+            draws_unseen |= draws_unseen_shapes(fragment.kind);
             if position == 0 {
                 ink = fragment.ink;
+                if paints {
+                    own_paint = fragment.ink;
+                }
             } else {
                 inks.push(fragment.ink);
             }
@@ -195,7 +204,7 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
             }
             position += 1;
         }
-        disjoint &= !inks.iter().any(|piece| overlaps(ink, *piece));
+        disjoint &= !inks.iter().any(|piece| overlaps(own_paint, *piece));
         disjoint &= pairwise_disjoint(&inks);
         let subtree_ink = inks.iter().fold(ink, |held, piece| held.union(*piece));
 
@@ -210,7 +219,8 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
             }
         }
         folded.subtree_ink = subtree_ink;
-        folded.disjoint = disjoint;
+        // The box's own answer is stored; its parent hears that a drawing is not disjoint.
+        folded.disjoint = disjoint && !draws_unseen;
         folded
     }
 
