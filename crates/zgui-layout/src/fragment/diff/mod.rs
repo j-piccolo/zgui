@@ -794,6 +794,19 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
             .bounds_placed(clip, &|id| self.resolve(id))
     }
 
+    /// What a fragment's clip chain admitted in the frame before, through the matrices it was
+    /// drawn under then.
+    fn admits_before(&self, clip: ClipId) -> Rect<DevicePx, Device> {
+        let tables = &*self.tables;
+        tables.clips.bounds_placed(clip, &|id| {
+            tables
+                .drawn
+                .get(id)
+                .copied()
+                .or_else(|| tables.spatial.resolve(id))
+        })
+    }
+
     /// What a fragment's chain admits, as a region damage may be cut to.
     fn admitted(&self, clip: ClipId) -> Admitted {
         Admitted(self.admits(clip))
