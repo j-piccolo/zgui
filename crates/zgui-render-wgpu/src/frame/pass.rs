@@ -543,7 +543,14 @@ impl<'frame> Recorder<'frame> {
         let order = &buffers.orders[lane];
         let stride = core::mem::size_of::<crate::buffer::persist::OrderEntry>() as u64;
         pass.set_vertex_buffer(0, order.slice_from(range.start as u64 * stride));
-        pass.draw(0..4, 0..(range.end - range.start) as u32);
+        // A shadow is a ring of ten strip vertices around the core of its box. Other kinds are
+        // quads.
+        let vertices = if matches!(kind, PipelineKind::Shadow) {
+            0..10
+        } else {
+            0..4
+        };
+        pass.draw(vertices, 0..(range.end - range.start) as u32);
         true
     }
 

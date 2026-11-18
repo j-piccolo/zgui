@@ -80,10 +80,37 @@ fn vs_shadow(
     let shadow = load_shadow(slot);
     // `bounds` is already everything the primitive paints: the blurred shape dilated by the
     // gaussian's reach for a drop shadow, and the casting box itself for an inset one.
-    let local = inflated_corner(vertex, shadow.bounds) + shift;
+    //
+    // Drawn as a ring: a strip of ten vertices between the outer quad and an inner quad. The
+    // fragment stage gives a drop shadow zero coverage inside the box that casts it, so the ring
+    // skips the box's core. The inner quad is the box inset by its largest corner radius plus a
+    // pixel. For an inset shadow, or a box with no core, the inner quad is a point and the ring
+    // covers the whole quad.
+    let outer_origin = bounds_origin(shadow.bounds) - vec2<f32>(1.0);
+    let outer_size = bounds_size(shadow.bounds) + vec2<f32>(2.0);
+    let around = (vertex >> 1u) % 4u;
+    // Clockwise from the top left, so consecutive pairs sweep the ring.
+    let unit = vec2<f32>(
+        select(0.0, 1.0, around == 1u || around == 2u),
+        select(0.0, 1.0, around >= 2u),
+    );
+    var point = outer_origin + unit * outer_size;
+    if (vertex & 1u) == 1u {
+        let r = shadow.element_radii;
+        let inset = max(max(max(r.tl_x, r.tl_y), max(r.tr_x, r.tr_y)), max(max(r.br_x, r.br_y), max(r.bl_x, r.bl_y))) + 1.0;
+        let lo = max(bounds_origin(shadow.element_bounds) + vec2<f32>(inset), outer_origin);
+        let hi = min(bounds_origin(shadow.element_bounds) + bounds_size(shadow.element_bounds) - vec2<f32>(inset), outer_origin + outer_size);
+        let center = outer_origin + outer_size * 0.5;
+        if shadow.inset == 0u && all(hi > lo) {
+            point = lo + unit * (hi - lo);
+        } else {
+            point = center;
+        }
+    }
+    let local = point + shift;
     var out: ShadowVarying;
     out.position = to_clip_position(local, shadow.transform);
-    out.local = inflated_offset(vertex, shadow.bounds);
+    out.local = point - bounds_origin(shadow.bounds);
     out.origin = bounds_origin(shadow.bounds);
     out.v_shape_bounds = bounds_of(shadow.shape_bounds);
     out.v_radii_lo = radii_lo(shadow.radii);
