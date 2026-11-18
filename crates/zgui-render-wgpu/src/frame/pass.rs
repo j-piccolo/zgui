@@ -122,7 +122,7 @@ impl<'frame> Recorder<'frame> {
                     self.record_pass(encoder, plan, run, &mut recorded);
                     index = end;
                 }
-                Segment::Round(_) => {}
+                Segment::Round(_) => index += 1,
             }
         }
         counter::add(Counter::DrawCalls, u64::from(recorded.draw_calls));
