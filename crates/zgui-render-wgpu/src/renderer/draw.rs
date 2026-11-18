@@ -294,6 +294,18 @@ impl Renderer for WgpuRenderer {
             );
         }
         let mut recorded = Recorded::default();
+        // Dashes are rare and cost every quad the narrow compile, so a frame without one draws
+        // its quads with the shader that has none.
+        let quads = if scene
+            .primitives
+            .quads
+            .iter()
+            .any(|quad| quad.style & 0xff != 0)
+        {
+            PipelineKind::Quad
+        } else {
+            PipelineKind::QuadSolid
+        };
         // A frame of several damage rectangles can prepare a round more than once, so a failed
         // round is counted once per frame.
         let mut dropped = false;
@@ -303,7 +315,7 @@ impl Renderer for WgpuRenderer {
                 self.gpu.queue().submit([finished.finish()]);
                 dropped |= !self.rasterise_round(scene, vectors, round);
             }
-            recorded += self.record(&mut encoder, &plan, segments, marks.extent);
+            recorded += self.record(&mut encoder, &plan, segments, marks.extent, quads);
         }
         if dropped {
             counter::bump(Counter::VectorFramesDropped);
@@ -627,6 +639,7 @@ impl WgpuRenderer {
         plan: &crate::frame::build::FramePlan,
         segments: &[crate::frame::segment::Segment],
         mark_extent: zgui_geom::Size<i32, zgui_geom::Device>,
+        quads: PipelineKind,
     ) -> Recorded {
         let pipelines = &mut *self.pipelines.borrow_mut();
         Recorder {
@@ -642,6 +655,7 @@ impl WgpuRenderer {
             marks: &self.marks_scratch,
             mark_extent,
             timer: self.timer.as_mut(),
+            quads,
         }
         .record(encoder, plan, segments)
     }

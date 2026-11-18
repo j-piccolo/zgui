@@ -142,8 +142,20 @@ fn vs_quad(
     return out;
 }
 
+// Every quad, dashed and dotted borders included.
 @fragment
 fn fs_quad(in: QuadVarying) -> @location(0) vec4<f32> {
+    return shade_quad(in, true);
+}
+
+// A frame with no dashed or dotted border. Without the dash code the shader fits Intel's register
+// file at sixteen pixels a thread rather than eight.
+@fragment
+fn fs_quad_solid(in: QuadVarying) -> @location(0) vec4<f32> {
+    return shade_quad(in, false);
+}
+
+fn shade_quad(in: QuadVarying, dashes: bool) -> vec4<f32> {
     // How long one device pixel is in the primitive's own space. Read before any branch, because
     // a derivative is only defined where every fragment of the quad takes it.
     let unit = max(max(fwidth(in.local).x, fwidth(in.local).y), 1e-6);
@@ -297,7 +309,7 @@ fn fs_quad(in: QuadVarying) -> @location(0) vec4<f32> {
             border_color = paint_color(quad.stroke, point, paint_origin);
         }
         let style = quad.style & 0xffu;
-        if style != BORDER_SOLID {
+        if dashes && style != BORDER_SOLID {
             border_color *= dash_coverage(
                 quad,
                 style,

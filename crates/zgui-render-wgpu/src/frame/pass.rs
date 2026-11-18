@@ -68,6 +68,9 @@ pub struct Recorder<'frame> {
     pub mark_extent: Size<i32, Device>,
     /// The frame's pass timing, when timing is on.
     pub(crate) timer: Option<&'frame mut GpuTimer>,
+    /// The pipeline every quad batch is drawn with: the one without dashes unless the frame has a
+    /// dashed or dotted border.
+    pub quads: PipelineKind,
 }
 
 impl<'frame> Recorder<'frame> {
@@ -470,7 +473,7 @@ impl<'frame> Recorder<'frame> {
         'frame: 'pass,
     {
         let (kind, range, texture) = match batch {
-            Batch::Quads(range) => (PipelineKind::Quad, range, None),
+            Batch::Quads(range) => (self.quads, range, None),
             Batch::Shadows(range) => (PipelineKind::Shadow, range, None),
             Batch::Decorations(range) => (PipelineKind::Decoration, range, None),
             Batch::MonoSprites { texture, range } => {
@@ -545,7 +548,10 @@ impl<'frame> Recorder<'frame> {
         pass.set_vertex_buffer(0, order.slice_from(range.start as u64 * stride));
         // A shadow is a ring of ten strip vertices around the core of its box, and so is a quad,
         // around the inside of an unfilled one. Other kinds are quads.
-        let vertices = if matches!(kind, PipelineKind::Shadow | PipelineKind::Quad) {
+        let vertices = if matches!(
+            kind,
+            PipelineKind::Shadow | PipelineKind::Quad | PipelineKind::QuadSolid
+        ) {
             0..10
         } else {
             0..4
