@@ -260,17 +260,25 @@ fn an_opaque_port_needs_nothing_of_what_is_behind_it() {
     );
 }
 
+/// The composed pixels are the composite, so a box drawn over the port would be moved with the
+/// content under it. The shift moves the part of the port clear of the box, and the band the box
+/// is in is drawn again.
 #[test]
-fn something_drawn_over_the_port_refuses_the_shift() {
+fn something_drawn_over_the_port_is_drawn_again_beside_the_shift() {
     let _recording = Recording::begin();
 
     let (clear, _) = turn(200, "", false, true);
     let (overdrawn, _) = turn(200, "", true, true);
+    let (unshifted, _) = turn(200, "", true, false);
 
     assert!(
-        overdrawn > clear * 2,
-        "the composed pixels are the composite, so a box drawn over the port would be moved with \
-         the content under it: {overdrawn} against {clear}",
+        overdrawn > clear,
+        "the band a box over the port is in is not moved, so it is drawn again: {overdrawn} \
+         against {clear}",
+    );
+    assert!(
+        overdrawn < unshifted,
+        "the port clear of the box is still moved: {overdrawn} against {unshifted}",
     );
 }
 

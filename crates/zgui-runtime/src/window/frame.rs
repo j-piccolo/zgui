@@ -1599,7 +1599,20 @@ impl Window {
             // moving pixels the renderer already has replaces the whole port with the bands the
             // move leaves undefined, and everything the frame damaged for any *other* reason is
             // kept and drawn over them.
-            shift = self.scroll_shift(viewport).ok();
+            let shifted = self.scroll_shift(viewport);
+            // Why not, for the trace: a list that never shifts is a different bug from one that
+            // shifts, and the refusal says whose.
+            let refused = shifted.as_ref().err().copied();
+            let (moved, whole, beside, apart) = match shifted {
+                Ok(shifted) => (
+                    Some(shifted.moved),
+                    Some(shifted.port),
+                    shifted.beside,
+                    shifted.apart,
+                ),
+                Err(_) => (None, None, Vec::new(), Vec::new()),
+            };
+            shift = moved;
             if let Some(shift) = shift {
                 // Everything this frame owes that the copy does not answer: what it owed before
                 // any layout pass, what the passes damaged beyond their movement, what the stages
@@ -1617,12 +1630,49 @@ impl Window {
                 self.damage.absorb_set(&self.rigid_moves.beyond);
                 self.damage.absorb_set(&self.damage_after_layout);
                 shift.expose_into(&mut self.damage);
+                // The bands what does not scroll is drawn in were not moved: drawn again, whole.
+                for &band in &beside {
+                    self.damage.absorb(band);
+                }
+                if let Some(whole) = whole {
+                    self.damage = super::scroll::shift::across(&self.damage, whole, shift.by);
+                }
             }
             self.damage
                 .clip_to(zgui_geom::Rect::new(zgui_geom::Point::new(0, 0), viewport));
             zgui_profile::latency::note_with("d.postshift", || {
+                // The element a document refusal names, as a selector.
+                let by = refused
+                    .and_then(super::scroll::shift::Refused::element)
+                    .and_then(|node| {
+                        let document = self.document.try_borrow().ok()?;
+                        Some(crate::window::owners::name(&document, node))
+                    })
+                    .unwrap_or_default();
+                // What the shift moved around, by element: the bands beside the moved part are
+                // theirs.
+                let apart = self
+                    .document
+                    .try_borrow()
+                    .map(|document| {
+                        apart
+                            .iter()
+                            .map(|(node, ink)| {
+                                let name = node
+                                    .map(|node| crate::window::owners::name(&document, node))
+                                    .unwrap_or_default();
+                                format!(
+                                    "{name} @ {},{},{},{}",
+                                    ink.origin.x, ink.origin.y, ink.size.width, ink.size.height
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    })
+                    .unwrap_or_default();
                 format!(
-                    "by={:?} inherited={:?} beyond={:?} after={:?}",
+                    "by={:?} beside={beside:?} refused={refused:?} {by} apart=[{apart}] \
+                     inherited={:?} beyond={:?} after={:?}",
                     shift.map(|s| s.by),
                     self.damage_before_layout.rects(),
                     self.rigid_moves.beyond.rects(),
@@ -1764,9 +1814,9 @@ impl Window {
                 )
             });
             // After the damage grew: what the frame draws again, against what its shift moved.
-            if let Some(moved) = shift {
+            if let (Some(moved), Some(whole)) = (shift, whole) {
                 zgui_profile::latency::note_with("shift.acct", || {
-                    super::scroll::shift::account(&self.damage, moved.port, moved.port)
+                    super::scroll::shift::account(&self.damage, whole, moved.port)
                 });
             }
             mark("p.emit");
