@@ -78,6 +78,38 @@ struct QuadVarying {
     // reject a fragment outside the clip, the colour to shade every fragment inside it.
     @location(9) @interpolate(flat) v_clip_box: vec4<f32>,
     @location(10) @interpolate(flat) v_fill: vec4<f32>,
+    // Where on the device a clip with rounded tests certainly covers the whole pixel (min then
+    // max), so a fragment there reads no test. Empty where that cannot be said once per instance.
+    @location(11) @interpolate(flat) v_clip_safe: vec4<f32>,
+}
+
+// The part of `safe` that is at least half a pixel inside `test` and clear of its corners.
+fn inside_rounded(safe: vec4<f32>, test: Rounded) -> vec4<f32> {
+    let r = test.radii;
+    let x = max(max(r.tl_x, r.tr_x), max(r.br_x, r.bl_x)) + 0.5;
+    let y = max(max(r.tl_y, r.tr_y), max(r.br_y, r.bl_y)) + 0.5;
+    let inner = vec4<f32>(
+        test.rect.x + x,
+        test.rect.y + y,
+        test.rect.x + test.rect.w - x,
+        test.rect.y + test.rect.h - y,
+    );
+    return vec4<f32>(max(safe.xy, inner.xy), min(safe.zw, inner.zw));
+}
+
+// Where a chain with `count` rounded tests is certainly whole, on the device. Empty for a chain
+// with none, which reads nothing per fragment anyway, and for one that moves with a `space`.
+fn clip_safe_rect(clip_id: u32, count: u32, space: u32) -> vec4<f32> {
+    if count == 0u || space != NO_SPACE {
+        return vec4<f32>(1.0, 1.0, 0.0, 0.0);
+    }
+    let aabb = clip_aabb(clip_id);
+    var safe = vec4<f32>(aabb.x, aabb.y, aabb.x + aabb.w, aabb.y + aabb.h);
+    safe = inside_rounded(safe, clip_rounded(clip_id, 0u));
+    if count > 1u {
+        safe = inside_rounded(safe, clip_rounded(clip_id, 1u));
+    }
+    return safe;
 }
 
 @vertex
@@ -132,8 +164,11 @@ fn vs_quad(
     out.v_border = vec4<f32>(quad.border.top, quad.border.right, quad.border.bottom, quad.border.left);
     out.v_origin_shape = vec4<f32>(quad.paint_origin.x, quad.paint_origin.y, quad.shape, 0.0);
     out.v_refs = vec4<u32>(quad.fill.kind, quad.fill.index, quad.stroke.kind, quad.stroke.index);
-    out.v_ids = vec4<u32>(quad.style, quad.clip, clip_count(quad.clip), clip_space(quad.clip));
+    let count = clip_count(quad.clip);
+    let space = clip_space(quad.clip);
+    out.v_ids = vec4<u32>(quad.style, quad.clip, count, space);
     out.v_clip_box = bounds_of(clip_aabb(quad.clip));
+    out.v_clip_safe = clip_safe_rect(quad.clip, count, space);
     var fill = vec4<f32>(0.0);
     if quad.fill.kind == PAINT_SOLID {
         fill = rgba_of(load_paint(quad.fill.index).color);
@@ -204,7 +239,9 @@ fn shade_quad(in: QuadVarying, dashes: bool) -> vec4<f32> {
         // A clip measured in a system of its own needs the kept part, which only the table holds.
         // That reads the box a second time, which is the price of the case that has one.
         clip = clip_coverage(at, quad.clip);
-    } else if in.v_ids.z > 0u {
+    } else if in.v_ids.z > 0u
+        && (any(at < in.v_clip_safe.xy) || any(at > in.v_clip_safe.zw)) {
+        // Past where the vertex stage found the rounded tests whole, so they are read.
         clip = clip_rounded_coverage(at, quad.clip, in.v_ids.z);
     }
     if clip <= 0.0 {
