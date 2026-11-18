@@ -377,7 +377,7 @@ impl FrameBuffers {
     /// The arena lane a pipeline draws out of.
     pub fn lane(kind: PipelineKind) -> Option<usize> {
         Some(match kind {
-            PipelineKind::Quad | PipelineKind::QuadSolid => 0,
+            PipelineKind::Quad | PipelineKind::QuadSolid | PipelineKind::QuadReplace => 0,
             PipelineKind::Shadow => 1,
             PipelineKind::Decoration => 2,
             PipelineKind::MonoSprite => 3,

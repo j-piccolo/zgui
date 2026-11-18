@@ -270,20 +270,39 @@ fn plan_rect(
         .iter()
         .filter(|cover| cover.rect.contains_rect(rect))
         .max_by_key(|cover| cover.at);
+    // A translucent fill hides nothing, but drawn first it lands on what the erasure would have
+    // left, so writing it with no blend is the erasure and the blend in one draw: a glass panel
+    // under the rows that changed. Asked only where no opaque fill answered, and not in a frame
+    // with a backdrop, which reads pixels this would leave from the frame before.
+    let replaced = if hidden.is_none() && scene.primitives.backdrops.is_empty() {
+        reach::replaced_by(scene, batches, rect)
+    } else {
+        None
+    };
     // Nothing covers it, so what is in it goes first. It is a draw because a render pass clears
     // its whole attachment or none of it, and clearing all of it would throw away every pixel this
     // frame is relying on not having to redraw.
-    if hidden.is_none() {
+    if hidden.is_none() && replaced.is_none() {
         builder.draw(PlannedDraw::Clear);
     }
 
-    for Reached { batch, reach } in batches {
+    for (index, Reached { batch, reach }) in batches.iter().enumerate() {
         // What the covering fill hides of this batch is not drawn. Quads are cut exactly, because
         // the fill is one of them; a batch of another kind goes whole or not at all.
-        let cut = hidden.map_or_else(
-            || Some(batch.clone()),
-            |cover| scene.behind(batch.clone(), cover),
-        );
+        let cut = match (hidden, replaced) {
+            (Some(cover), _) => scene.behind(batch.clone(), cover),
+            // Nothing before the translucent fill draws in the rectangle, so it is all left out.
+            (None, Some((first, _))) if index < first => None,
+            (None, Some((first, at))) if index == first => match batch {
+                Batch::Quads(range) => {
+                    let start = range.start + at;
+                    builder.draw(PlannedDraw::Replace(Batch::Quads(start..start + 1)));
+                    (start + 1 < range.end).then(|| Batch::Quads(start + 1..range.end))
+                }
+                other => Some(other.clone()),
+            },
+            _ => Some(batch.clone()),
+        };
         let Some(batch) = cut.as_ref() else {
             continue;
         };

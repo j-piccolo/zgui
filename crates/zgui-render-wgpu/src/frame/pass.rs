@@ -329,7 +329,12 @@ impl<'frame> Recorder<'frame> {
                 pass.draw(0..4, 0..1);
                 true
             }
-            PlannedDraw::Batch(batch) => self.batch(pass, planned, tables, batch.clone(), format),
+            PlannedDraw::Batch(batch) => {
+                self.batch(pass, planned, tables, batch.clone(), format, false)
+            }
+            PlannedDraw::Replace(batch) => {
+                self.batch(pass, planned, tables, batch.clone(), format, true)
+            }
             PlannedDraw::Blur {
                 source,
                 params,
@@ -468,11 +473,13 @@ impl<'frame> Recorder<'frame> {
         tables: Option<&wgpu::BindGroup>,
         batch: Batch,
         format: wgpu::TextureFormat,
+        replacing: bool,
     ) -> bool
     where
         'frame: 'pass,
     {
         let (kind, range, texture) = match batch {
+            Batch::Quads(range) if replacing => (PipelineKind::QuadReplace, range, None),
             Batch::Quads(range) => (self.quads, range, None),
             Batch::Shadows(range) => (PipelineKind::Shadow, range, None),
             Batch::Decorations(range) => (PipelineKind::Decoration, range, None),
@@ -550,7 +557,10 @@ impl<'frame> Recorder<'frame> {
         // around the inside of an unfilled one. Other kinds are quads.
         let vertices = if matches!(
             kind,
-            PipelineKind::Shadow | PipelineKind::Quad | PipelineKind::QuadSolid
+            PipelineKind::Shadow
+                | PipelineKind::Quad
+                | PipelineKind::QuadSolid
+                | PipelineKind::QuadReplace
         ) {
             0..10
         } else {
