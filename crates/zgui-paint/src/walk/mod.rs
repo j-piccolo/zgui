@@ -1079,14 +1079,18 @@ impl Pass<'_, '_> {
                 .reuse(self.scene, fragment, painted, phase)
         };
         match reuse {
-            Reuse::Replay(offset) => {
+            Reuse::Replay(offset) | Reuse::Faded(offset, _) => {
+                let fade = match reuse {
+                    Reuse::Faded(_, fade) => fade,
+                    _ => 1.0,
+                };
                 self.verify_replay(fragment);
                 let (source, chunk) = self
                     .painter
                     .cache
                     .chunk(fragment.key)
                     .expect("a replayable fragment has a recorded chunk");
-                let range = self.scene.replay_chunk(chunk, offset, source);
+                let range = self.scene.replay_chunk_faded(chunk, offset, source, fade);
                 let pushed = (range.end - range.start) as usize;
                 self.report.primitives += pushed;
                 self.painter.cache.replayed(fragment);

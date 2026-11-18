@@ -291,6 +291,10 @@ pub enum Reuse {
     /// The offset is zero for a fragment that did not move at all, which is the commonest case and
     /// is still a replay: what it saves is the encoding, not the movement.
     Replay(Size<DevicePx, Device>),
+    /// The record stands but for the opacity over it, and everything it holds carries its colour
+    /// inline: replayed with the movement and every colour multiplied by the factor. A fade over a
+    /// row of text replays its glyphs instead of placing them again.
+    Faded(Size<DevicePx, Device>, f32),
 }
 
 /// Every fragment's last painting, kept across frames.
@@ -541,8 +545,25 @@ impl PaintCache {
         let Some(record) = self.records.get(&fragment.key) else {
             return Reuse::Encode;
         };
+        let mut fade = 1.0;
         if record.painted != painted {
-            return Reuse::Encode;
+            // Under another opacity, and nothing else: the decorations fade with it, and a chunk
+            // that fades inline holds none.
+            let held = f32::from_bits(record.painted.alpha);
+            let now = f32::from_bits(painted.alpha);
+            let unfaded = Painted {
+                alpha: record.painted.alpha,
+                decorations: record.painted.decorations,
+                ..painted
+            };
+            if unfaded != record.painted
+                || held <= 0.0
+                || !now.is_finite()
+                || !Scene::fades_inline(&record.prims)
+            {
+                return Reuse::Encode;
+            }
+            fade = now / held;
         }
         if record.provisional
             || record.layer_phase.is_some_and(|held| Some(held) != phase)
@@ -576,7 +597,11 @@ impl PaintCache {
             self.indices_still_resolve(scene, record),
             "a replayed range's clip or transform no longer resolves to what it was recorded with"
         );
-        Reuse::Replay(offset)
+        if fade == 1.0 {
+            Reuse::Replay(offset)
+        } else {
+            Reuse::Faded(offset, fade)
+        }
     }
 
     /// The animation signature `fragment`'s record was encoded under, if it has a record.
