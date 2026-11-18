@@ -49,7 +49,11 @@ const LABELS: [&str; 12] = [
 ];
 
 fn ink(log: &Log, rect: Rect<DevicePx, Device>) -> usize {
-    let frames = log.lock().unwrap_or_else(|held| held.into_inner());
+    let mut frames = log.lock().unwrap_or_else(|held| held.into_inner());
+    // Only the newest frame is read. Each one holds two read-backs of the whole window, 65 MB at
+    // this size, and the run draws several hundred, so the older ones are dropped here.
+    let older = frames.len().saturating_sub(1);
+    frames.drain(..older);
     let frame = frames.last().expect("a frame was drawn");
     let size = frame.composed.size();
     let left = (rect.origin.x.0.floor() as i32).clamp(0, size.width - 1);
