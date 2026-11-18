@@ -307,8 +307,25 @@ impl ClipTable {
         matrix_of: &dyn Fn(SpatialId) -> Option<Matrix4>,
         kept: SpatialId,
     ) -> Option<KeptClip> {
+        self.resolve_kept_in(id, matrix_of, kept, None)
+    }
+
+    /// [`ClipTable::resolve_kept`], with the plain rectangles measured in `outer` left in `outer`'s
+    /// own coordinates as well.
+    ///
+    /// For a chain under two systems that each only translate, such as a row that scrolls inside
+    /// a page that scrolls: neither system moving changes the result. The caller makes sure every
+    /// link measured in `outer` is a plain rectangle; a rounded one is put on the device.
+    pub fn resolve_kept_in(
+        &self,
+        id: ClipId,
+        matrix_of: &dyn Fn(SpatialId) -> Option<Matrix4>,
+        kept: SpatialId,
+        outer: Option<SpatialId>,
+    ) -> Option<KeptClip> {
         let mut resolved = ResolvedClip::unbounded();
         let mut kept_aabb = ResolvedClip::unbounded().aabb;
+        let mut outer_aabb = ResolvedClip::unbounded().aabb;
         let mut kept_tests = 0u32;
         let mut rounded = 0usize;
         // Innermost first, as in `resolve_placed`.
@@ -324,6 +341,11 @@ impl ClipTable {
                     shape,
                     space,
                 } => {
+                    if Some(space) == outer && !link.is_rounded() {
+                        intersect(&mut outer_aabb, rect);
+                        cursor = *parent;
+                        continue;
+                    }
                     let local = space == kept;
                     let (rect, radii) = if local {
                         (rect, radii)
@@ -368,6 +390,7 @@ impl ClipTable {
             clip: resolved,
             kept_aabb,
             kept_tests,
+            outer_aabb,
         })
     }
 

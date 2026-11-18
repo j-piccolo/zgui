@@ -136,7 +136,15 @@ pub fn structures(module: Module) -> Vec<Reflected> {
             GpuClip,
             "Clip",
             [
-                aabb, first, second, kept_aabb, count, space, kept_tests, pad
+                aabb,
+                first,
+                second,
+                kept_aabb,
+                count,
+                space,
+                kept_tests,
+                outer_space,
+                outer_aabb
             ]
         ),
         reflected!(
@@ -633,12 +641,20 @@ mod tests {
                 texel(offset_of!(GpuClip, kept_aabb))
             ),
         );
-        // The three scalars share the last texel, one channel each.
+        names(
+            "clip_outer_aabb",
+            format!(
+                "id * CLIP_TEXELS + {}u)",
+                texel(offset_of!(GpuClip, outer_aabb))
+            ),
+        );
+        // The four scalars share one texel, one channel each.
         let last = texel(offset_of!(GpuClip, count));
         for (function, offset, channel) in [
             ("clip_count", offset_of!(GpuClip, count), 'x'),
             ("clip_space", offset_of!(GpuClip, space), 'y'),
             ("clip_kept_tests", offset_of!(GpuClip, kept_tests), 'z'),
+            ("clip_outer_space", offset_of!(GpuClip, outer_space), 'w'),
         ] {
             assert_eq!(
                 offset,
