@@ -116,7 +116,8 @@ pub fn set_resizable(surface: &WaylandSurface, resizable: bool) {
 /// An unmapped surface is shown again by the same empty commit that asked for its first configure.
 /// The pacer holds the redraw until a configure that answers that commit arrives. A shell layer is
 /// a fresh surface to the shell after an unmap, so its whole placement and extent go out again
-/// before that commit.
+/// before that commit. A shell layer makes that commit when it is hidden, see [`unmap`], and the
+/// configure is kept: the show draws at once.
 ///
 /// A surface hidden before the first buffer of its mapping is still in that mapping's configure
 /// sequence. Hiding it commits nothing, and showing it again only lets the next frame draw once
@@ -172,7 +173,7 @@ pub fn set_visible(surface: &WaylandSurface, visible: bool) {
 /// A surface that shows no buffer is not mapped, so it commits nothing. It keeps the configure it
 /// holds for the show. A mapped surface sends a barrier right after the commit, and every
 /// configure that arrives before the answer is dropped unacknowledged: the shell sent it for the
-/// mapping that is gone.
+/// mapping that is gone. A shell layer then asks for the configure of its next mapping.
 pub(crate) fn unmap(surface: &WaylandSurface) {
     let shown = surface.shared().shown;
     if shown {
@@ -181,6 +182,15 @@ pub(crate) fn unmap(surface: &WaylandSurface) {
         wl.commit();
         let serial = surface.shared().sequence.reset();
         surface.send_barrier(serial);
+        // A shell layer makes the initial commit of its next mapping now, and keeps the configure
+        // that answers it for the show. The show is then one frame, with no round trip through
+        // the compositor in front of it. The commit carries no buffer, so it maps nothing.
+        if surface.role().layer().is_some() {
+            surface.send_layer(true);
+            surface.send_regions();
+            wl.commit();
+            surface.shared().sequence.restarted();
+        }
     }
     let mut shared = surface.shared();
     shared.hide_owed = false;
