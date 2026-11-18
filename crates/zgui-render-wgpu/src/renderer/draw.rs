@@ -24,6 +24,8 @@ impl Renderer for WgpuRenderer {
     }
 
     fn configure(&mut self, target: RenderTarget) {
+        // A texture of the old swap chain must not outlive the reconfiguration.
+        self.history.forget();
         // A change of scale or of opacity changes what every composed pixel means, and moves no
         // allocation that would otherwise say so. A change of size alone keeps the composed target
         // whenever it still fits, and the pixels in it are the last frame's: the caller damages
@@ -255,6 +257,7 @@ impl Renderer for WgpuRenderer {
         }
         // Before anything this frame draws, and after nothing: the passes below clear and redraw
         // each damage rectangle, and the pixels this moves are the ones outside them.
+        let mut shifted = None;
         let pending = self.pending_shift.take();
         let shift_timed = pending.and_then(|_| {
             self.timer
@@ -269,6 +272,9 @@ impl Renderer for WgpuRenderer {
                 &mut self.shift_scratch,
                 shift,
             );
+            if moved {
+                shifted = Some(shift.port);
+            }
             zgui_profile::latency::note("r.shift", format!("by={:?} moved={moved}", shift.by));
         }
         if let Some(queries) = shift_timed {
@@ -334,6 +340,10 @@ impl Renderer for WgpuRenderer {
             );
         }
 
+        let mut changes = crate::frame::damage::rects(damage, self.composed.used()).to_vec();
+        changes.extend(shifted);
+        self.history.changed(changes);
+
         // The platform may not be ready for another buffer. The frame is composed and submitted
         // either way, so its damage retires; the copy to the surface waits for `present_held`.
         self.held = self.present_gate.as_ref().is_some_and(|gate| !gate());
@@ -350,7 +360,8 @@ impl Renderer for WgpuRenderer {
         let mut draw_calls = recorded.draw_calls;
         if let Some(view) = &presented.view {
             let limit = self.blit_limit(&presented);
-            self.blit(&mut encoder, view, formats.blit_undoes_srgb(), limit);
+            let image = image_of(&presented);
+            self.blit(&mut encoder, view, formats.blit_undoes_srgb(), limit, image);
             draw_calls += 1;
             zgui_profile::latency::mark("r.blit");
         }
@@ -386,7 +397,8 @@ impl Renderer for WgpuRenderer {
         let mut draw_calls = 0;
         if let Some(view) = &presented.view {
             let limit = self.blit_limit(&presented);
-            self.blit(&mut encoder, view, formats.blit_undoes_srgb(), limit);
+            let image = image_of(&presented);
+            self.blit(&mut encoder, view, formats.blit_undoes_srgb(), limit, image);
             draw_calls = 1;
         }
         self.gpu.queue().submit([encoder.finish()]);
@@ -806,7 +818,21 @@ impl WgpuRenderer {
         view: &wgpu::TextureView,
         undo: bool,
         limit: Option<(u32, u32)>,
+        image: Option<crate::frame::age::Image>,
     ) {
+        let surface = zgui_geom::Rect::new(
+            zgui_geom::Point::new(0, 0),
+            zgui_geom::Size::new(self.target.size.width, self.target.size.height),
+        );
+        let missing = image
+            .as_ref()
+            .and_then(|image| self.history.missing(image, surface));
+        if let Some(image) = image {
+            self.history.presented(image);
+        }
+        if missing.as_ref().is_some_and(Vec::is_empty) {
+            return;
+        }
         let kind = if undo {
             PipelineKind::BlitUndoSrgb
         } else {
@@ -828,9 +854,13 @@ impl WgpuRenderer {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    // Every pixel is written, so nothing has to be preserved and no clear is
-                    // inserted ahead of the copy.
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    // A whole copy writes every pixel, so nothing has to be preserved and no clear
+                    // is inserted ahead of it. A partial one keeps what the image already holds.
+                    load: if missing.is_some() {
+                        wgpu::LoadOp::Load
+                    } else {
+                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                    },
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -841,28 +871,56 @@ impl WgpuRenderer {
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &self.composed_binding, &[]);
-        // A cropping swap chain can be larger than the frame. Only the frame's extent is shown, so
-        // only that is copied, and nothing reads past the composed target.
-        let mut drawn = zgui_geom::Rect::new(
-            zgui_geom::Point::new(0, 0),
-            zgui_geom::Size::new(self.target.size.width, self.target.size.height),
-        );
-        if let Some((width, height)) = limit {
-            pass.set_scissor_rect(0, 0, width, height);
-            drawn = zgui_geom::Rect::new(
-                zgui_geom::Point::new(0, 0),
-                zgui_geom::Size::new(width as i32, height as i32),
-            );
-        }
-        pass.draw(0..4, 0..1);
-        // Noted as `gpu.draw` like every pass draw, so a driver's per-draw timings stay in step.
         let fs = kind.fragment_entry();
-        zgui_profile::latency::note_with("gpu.draw", || {
-            let at = crate::frame::pass::rect_note(drawn);
-            format!(
-                "fs={fs} n=1 target=surface scissor={at} px={} box={at}",
-                drawn.size.width as i64 * drawn.size.height as i64
-            )
-        });
+        // Noted as `gpu.draw` like every pass draw, so a driver's per-draw timings stay in step.
+        let note = |rect: zgui_geom::Rect<i32, zgui_geom::Device>| {
+            zgui_profile::latency::note_with("gpu.draw", || {
+                let at = crate::frame::pass::rect_note(rect);
+                format!(
+                    "fs={fs} n=1 target=surface scissor={at} px={} box={at}",
+                    rect.size.width as i64 * rect.size.height as i64
+                )
+            });
+        };
+        match missing {
+            None => {
+                // A cropping swap chain can be larger than the frame. Only the frame's extent is
+                // shown, so only that is copied, and nothing reads past the composed target.
+                let mut drawn = surface;
+                if let Some((width, height)) = limit {
+                    pass.set_scissor_rect(0, 0, width, height);
+                    drawn = zgui_geom::Rect::new(
+                        zgui_geom::Point::new(0, 0),
+                        zgui_geom::Size::new(width as i32, height as i32),
+                    );
+                }
+                pass.draw(0..4, 0..1);
+                note(drawn);
+            }
+            Some(rects) => {
+                for rect in rects {
+                    if rect.size.width <= 0 || rect.size.height <= 0 {
+                        continue;
+                    }
+                    pass.set_scissor_rect(
+                        rect.origin.x.max(0) as u32,
+                        rect.origin.y.max(0) as u32,
+                        rect.size.width as u32,
+                        rect.size.height as u32,
+                    );
+                    pass.draw(0..4, 0..1);
+                    note(rect);
+                }
+            }
+        }
+    }
+}
+
+/// How the image `presented` copies into is told apart from the others.
+fn image_of(presented: &crate::target::swapchain::Presented) -> Option<crate::frame::age::Image> {
+    match (&presented.surface_texture, &presented.view) {
+        (Some(texture), _) => Some(crate::frame::age::Image::Texture(texture.texture.clone())),
+        (None, Some(view)) => Some(crate::frame::age::Image::Texture(view.texture().clone())),
+        (None, None) => None,
     }
 }

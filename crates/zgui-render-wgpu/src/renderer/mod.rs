@@ -128,6 +128,8 @@ pub struct WgpuRenderer {
     /// `None` for a window that has never shifted anything, which is every window that has never
     /// scrolled a self-contained region.
     shift_scratch: Option<crate::frame::shift::ShiftScratch>,
+    /// What each presented image is missing, so that the copy to the surface writes only that.
+    history: crate::frame::age::PresentHistory,
     /// The bin pages union marks write their coverage into.
     marks_scratch: crate::target::marks::MarksScratch,
     /// A region of the composed target whose pixels are to be moved before this frame draws.
@@ -252,6 +254,7 @@ impl WgpuRenderer {
             // holds however small its damage set is.
             full_damage_next: true,
             shift_scratch: None,
+            history: crate::frame::age::PresentHistory::default(),
             marks_scratch: crate::target::marks::MarksScratch::default(),
             pending_shift: None,
             present_composed_next: false,
