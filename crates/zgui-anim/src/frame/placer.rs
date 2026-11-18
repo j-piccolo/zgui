@@ -28,6 +28,12 @@ pub trait Placer {
         let _ = node;
     }
 
+    /// Told of an element whose placement this tick is the one it already had, so nothing is
+    /// written and nothing has to be drawn or emitted again.
+    fn held(&mut self, node: NodeKey) {
+        let _ = node;
+    }
+
     /// Writes `node`'s animated colours into the paint slots its box owns, and reports whether
     /// that is all the frame owes the box.
     ///
@@ -47,6 +53,13 @@ pub trait Placer {
     /// is correct for a box the fragment pass damages. The default does nothing.
     fn uncolored(&mut self, node: NodeKey, was: &AnimOverride) {
         let _ = (node, was);
+    }
+
+    /// Whether `node`'s animated `color` reaches nothing but the text of its own lines, so an
+    /// override can draw it without the cascade. A caller that cannot tell answers no.
+    fn colors_own_text_only(&self, node: NodeKey) -> bool {
+        let _ = node;
+        false
     }
 }
 

@@ -79,6 +79,7 @@ pub mod parity;
 pub use crate::damage::{DamageSink, TextWork};
 pub use crate::deps::{StyleDependencies, StyleFilterView};
 pub use crate::device::{ColorScheme, DeviceEpoch, Viewport};
+pub use crate::driver::animations::sample::transitions_text_color;
 pub use crate::driver::animations::{
     AnimatedProperties, AnimationEdge, AnimationReport, AnimationTime, Animations,
     ElementAnimation, Lifecycle, TimedKind,

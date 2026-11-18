@@ -123,6 +123,12 @@ pub struct PaintInput<'a> {
     /// would take the oracle with it, so the release tree would be asserting nothing where the
     /// debug tree asserts the whole thing.
     pub record_emitted: bool,
+    /// Whether to report the chunk revision each freshly encoded fragment was given, and its node.
+    ///
+    /// A primitive drawn out of a chunk carries the chunk's revision to the renderer, so a profiler
+    /// that has these pairs can name the element behind every primitive a draw covers. Off by
+    /// default: it costs a push per encoded fragment.
+    pub record_chunks: bool,
     /// Whether every replayed range is checked against the cache its rasters live in.
     ///
     /// The check is what catches a range drawing a raster that has been freed underneath it — see
@@ -167,6 +173,7 @@ impl<'a> PaintInput<'a> {
             scale: 1.0,
             scrollbars: crate::emit::scrollbar::default_paint(),
             record_emitted: false,
+            record_chunks: false,
             verify_replays: zgui_layout::invariants::enabled(),
             placements: None,
         }
@@ -200,6 +207,25 @@ pub struct PaintReport {
     /// A caller damages them and asks for a frame, so each is encoded again until its exact layer
     /// stands. An empty list asks for nothing.
     pub layers_owed: Vec<Rect<i32, Device>>,
+    /// The chunk each fragment encoded this frame was given, when [`PaintInput::record_chunks`]
+    /// was on.
+    pub chunks: Vec<ChunkReport>,
+    /// Why each group that took a target did, when [`PaintInput::record_chunks`] was on.
+    pub group_whys: Vec<group::GroupWhy>,
+}
+
+/// The chunk one fragment was encoded into, and what the fragment paints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChunkReport {
+    /// The chunk's revision, as [`zgui_scene::ChunkSlot::revision`] gives it for every primitive
+    /// drawn out of the chunk.
+    pub revision: u64,
+    /// The node the fragment was laid out for, or for a fragment with none (a line box) its
+    /// nearest ancestor's.
+    pub node: Option<NodeKey>,
+    /// What kind of fragment it is: `box`, `line`, `text`, `replaced`, `vector`, `custom` or
+    /// `scrollbar`.
+    pub kind: &'static str,
 }
 
 /// The vector raster paths selected for one freshly encoded element.
@@ -300,6 +326,7 @@ struct WalkScratch {
     outlines: Vec<Option<(FragKey, PaintStyleRef, Option<OwnedPaints>)>>,
     decorations: Decorations,
     text_fills: TextFills,
+    text_colors: Vec<Option<(zgui_color::Color, zgui_css::values::color::AbsoluteColor)>>,
     named: Vec<AtlasKey>,
     shapes: rustc_hash::FxHashMap<zgui_scene::SpatialId, u64>,
     spaces: rustc_hash::FxHashMap<zgui_scene::SpatialId, Option<zgui_geom::Affine2>>,
@@ -315,6 +342,7 @@ impl WalkScratch {
         self.outlines.clear();
         self.decorations.clear();
         self.text_fills.clear();
+        self.text_colors.clear();
         self.named.clear();
         self.shapes.clear();
         self.spaces.clear();
@@ -383,6 +411,7 @@ impl Painter {
             outlines: scratch.outlines,
             decorations: scratch.decorations,
             text_fills: scratch.text_fills,
+            text_colors: scratch.text_colors,
             named: scratch.named,
             shapes: scratch.shapes,
             spaces: scratch.spaces,
@@ -397,6 +426,7 @@ impl Painter {
             outlines,
             decorations,
             text_fills,
+            text_colors,
             named,
             shapes,
             spaces,
@@ -410,6 +440,7 @@ impl Painter {
             outlines,
             decorations,
             text_fills,
+            text_colors,
             named,
             shapes,
             spaces,
@@ -537,6 +568,10 @@ struct Pass<'a, 'b> {
     decorations: Decorations,
     /// The ramps contributed by the boxes still on the walk, for the text inside them.
     text_fills: TextFills,
+    /// The animated `color` in force over each entered box, innermost last: set by the element an
+    /// animation drives it on, carried through the anonymous boxes its lines hang from, and stopped
+    /// by any other element.
+    text_colors: Vec<Option<(zgui_color::Color, zgui_css::values::color::AbsoluteColor)>>,
     /// The rasters the fragment currently being encoded has named, reused between fragments.
     named: Vec<AtlasKey>,
     /// The fingerprint of what each coordinate system does to shapes, by name, for this frame.
@@ -658,6 +693,12 @@ impl Pass<'_, '_> {
     ///
     /// An anonymous box has no element and therefore no animation of its own; it inherits the
     /// composited alpha of the box above it exactly as it inherits everything else.
+    /// The animated text colour in force, with the folded alpha in it as the style's colour has.
+    fn text_color(&self) -> Option<zgui_color::Color> {
+        let (color, _) = self.text_colors.last().cloned().flatten()?;
+        Some(color.with_alpha(color.alpha() * self.alpha()))
+    }
+
     fn anim_of(&self, store: &LayoutStore, key: BoxKey) -> Option<&AnimOverride> {
         self.input.anim.get(store.get(key)?.source?)
     }
@@ -766,6 +807,7 @@ impl Pass<'_, '_> {
             alpha: self.alpha(),
             decorations,
             text_fill,
+            text_color: self.text_color(),
             inline,
             nested_inline: fragment.kind == FragmentKind::Box && node.is_nested_inline(),
             glyphs: self.input.glyphs,
@@ -1018,7 +1060,10 @@ impl Pass<'_, '_> {
             cut: store.fragment_extra(fragment).content_hash,
             scale: self.input.scale.to_bits(),
             decorations: decorate::signature(&decorations),
-            text_fill: fill::signature(text_fill.as_ref()),
+            text_fill: fill::signature(text_fill.as_ref())
+                ^ self
+                    .text_color()
+                    .map_or(0, |color| fill::color_signature(&color)),
             anim,
             alpha: self.alpha().to_bits(),
             subpixel: crate::emit::text::keeps_subpixel(
@@ -1053,14 +1098,18 @@ impl Pass<'_, '_> {
                 .reuse(self.scene, fragment, painted, phase)
         };
         match reuse {
-            Reuse::Replay(offset) => {
+            Reuse::Replay(offset) | Reuse::Faded(offset, _) => {
+                let fade = match reuse {
+                    Reuse::Faded(_, fade) => fade,
+                    _ => 1.0,
+                };
                 self.verify_replay(fragment);
                 let (source, chunk) = self
                     .painter
                     .cache
                     .chunk(fragment.key)
                     .expect("a replayable fragment has a recorded chunk");
-                let range = self.scene.replay_chunk(chunk, offset, source);
+                let range = self.scene.replay_chunk_faded(chunk, offset, source, fade);
                 let pushed = (range.end - range.start) as usize;
                 self.report.primitives += pushed;
                 self.painter.cache.replayed(fragment);
@@ -1128,11 +1177,45 @@ impl Pass<'_, '_> {
                     },
                     self.input.resources,
                 );
+                if self.input.record_chunks
+                    && let Some((revision, _)) = self.painter.cache.chunk(fragment.key)
+                {
+                    self.report.chunks.push(ChunkReport {
+                        revision,
+                        node: owning_node(self.input.store, fragment),
+                        kind: kind_name(&fragment.kind),
+                    });
+                }
             }
         }
         if self.input.record_emitted {
             self.report.emitted.push(frag);
         }
+    }
+}
+
+/// The node `fragment` was laid out for, or its nearest ancestor's: a line box has no node of its
+/// own, and its text belongs to the block that holds it.
+fn owning_node(store: &LayoutStore, fragment: &Fragment) -> Option<NodeKey> {
+    let mut at = fragment;
+    loop {
+        if let Some(node) = at.node {
+            return Some(node);
+        }
+        at = store.fragment(at.parent?)?;
+    }
+}
+
+/// The name [`ChunkReport::kind`] gives a fragment's kind.
+fn kind_name(kind: &FragmentKind) -> &'static str {
+    match kind {
+        FragmentKind::Box => "box",
+        FragmentKind::Line { .. } => "line",
+        FragmentKind::TextRun { .. } => "text",
+        FragmentKind::Replaced { .. } => "replaced",
+        FragmentKind::Vector => "vector",
+        FragmentKind::Custom => "custom",
+        FragmentKind::Scrollbar { .. } => "scrollbar",
     }
 }
 
@@ -1208,6 +1291,24 @@ impl stacking::Visitor for Pass<'_, '_> {
         // animating, and every other box borrows: a `PaintStyle` is several hundred bytes with two
         // inline vectors and a path in it, and at most one box on a screen is being hovered.
         let over = self.anim_of(store, key);
+        // An element computing its parent's colour inherited it, and follows the animation; one
+        // computing another set its own.
+        let text_color = store.get(key).and_then(|node| {
+            let computed = node.style.get_inherited_text().color;
+            match (node.source, over.and_then(|over| over.color.as_ref())) {
+                (Some(_), Some(color)) => {
+                    Some((zgui_css::values::color::to_color(color), computed))
+                }
+                (Some(_), None) => self
+                    .text_colors
+                    .last()
+                    .cloned()
+                    .flatten()
+                    .filter(|(_, parent)| *parent == computed)
+                    .map(|(color, _)| (color, computed)),
+                (None, _) => self.text_colors.last().cloned().flatten(),
+            }
+        });
         let style = match over {
             Some(over) => {
                 let mut composed = entry.clone();
@@ -1271,6 +1372,11 @@ impl stacking::Visitor for Pass<'_, '_> {
                 );
                 self.open.push((key, boundary));
                 self.report.groups += 1;
+                if self.input.record_chunks {
+                    self.report
+                        .group_whys
+                        .push(group::explain(store, key, &style, fragment));
+                }
             }
         }
         // A group's target is transparent, so per-channel text coverage inside it is meaningless
@@ -1300,6 +1406,7 @@ impl stacking::Visitor for Pass<'_, '_> {
         // The same propagation, for the same reason: the ramp that paints a heading's letters is
         // declared on the heading and the line boxes belong to an anonymous box under it.
         self.text_fills.enter(&node.style, style.text_fill.as_ref());
+        self.text_colors.push(text_color);
 
         for &frag in store.fragments_of_box(key) {
             self.paint(frag, style_ref, anim, owned);
@@ -1331,6 +1438,7 @@ impl stacking::Visitor for Pass<'_, '_> {
         self.opaque.pop();
         self.decorations.leave();
         self.text_fills.leave();
+        self.text_colors.pop();
         if self.open.last().is_some_and(|(opener, _)| *opener == key) {
             let (_, boundary) = self.open.pop().expect("just checked");
             group::close(self.scene, &boundary);

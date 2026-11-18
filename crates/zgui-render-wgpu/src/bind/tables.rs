@@ -55,8 +55,11 @@ pub struct GpuClip {
     pub space: u32,
     /// Bit 0 for `first`, bit 1 for `second`: set when the test is measured in `space`.
     pub kept_tests: u32,
-    /// Written zero, so the structure has no padding.
-    pub pad: u32,
+    /// The slot of a second coordinate system the chain's plain rectangles are measured in, or
+    /// [`NO_SPACE`]. Like `space`, it only translates.
+    pub outer_space: u32,
+    /// The intersection of the links measured in `outer_space`, in its coordinates.
+    pub outer_aabb: [f32; 4],
 }
 
 /// What [`GpuClip::space`] holds when every link of the chain is on the device.
@@ -754,18 +757,24 @@ fn resolve_slot(
         return freed_clip();
     }
     let matrix_of = |space: SpatialId| placements.get(space).copied();
-    let kept = innermost_space(table, id)
-        .filter(|space| {
-            placements
-                .moves(*space)
-                .is_some_and(|matrix| matrix.plane_translation().is_some())
-        })
-        .and_then(|space| Some((space, table.resolve_kept(id, &matrix_of, space)?)));
+    let translates = |space: SpatialId| {
+        placements
+            .moves(space)
+            .is_some_and(|matrix| matrix.plane_translation().is_some())
+    };
+    let innermost = innermost_space(table, id).filter(|space| translates(*space));
+    // A second translating system, for the plain rectangles measured in it: a scroller's port
+    // inside a page that scrolls. Then neither scroll changes the chain.
+    let outer = innermost.and_then(|kept| outer_space(table, id, kept, &translates));
+    let kept = innermost
+        .and_then(|space| Some((space, table.resolve_kept_in(id, &matrix_of, space, outer)?)));
     let kept_name = kept.map(|(space, _)| space);
+    let outer = outer.filter(|_| kept.is_some());
     let mut cursor = id;
     while let Some(ClipNode::Link { link, parent, .. }) = table.get(cursor) {
         if let ClipLink::RoundedRect { space, .. } = link
             && Some(*space) != kept_name
+            && Some(*space) != outer
             && !spaces.contains(&space.index())
         {
             spaces.push(space.index());
@@ -775,12 +784,50 @@ fn resolve_slot(
     let value = match kept {
         Some((space, clip)) => {
             spaces.push(space.index() | KEEPS);
-            gpu_kept(&clip, space.index())
+            if let Some(outer) = outer {
+                spaces.push(outer.index() | KEEPS);
+            }
+            gpu_kept(&clip, space.index(), outer.map(|outer| outer.index()))
         }
         None => gpu_clip(&table.resolve_placed(id, &matrix_of)),
     };
     deps.register(id.0, spaces);
     value
+}
+
+/// The first system outward of `kept` that translates and in which `id` measures only plain
+/// rectangles, if there is one.
+fn outer_space(
+    table: &ClipTable,
+    id: ClipId,
+    kept: SpatialId,
+    translates: &dyn Fn(SpatialId) -> bool,
+) -> Option<SpatialId> {
+    let mut candidate = None;
+    let mut cursor = id;
+    while let Some(ClipNode::Link { link, parent, .. }) = table.get(cursor) {
+        if let ClipLink::RoundedRect { space, .. } = link
+            && *space != kept
+            && candidate.is_none()
+            && translates(*space)
+        {
+            candidate = Some(*space);
+        }
+        cursor = *parent;
+    }
+    let candidate = candidate?;
+    // A rounded link in that system has no place in the plain intersection.
+    let mut cursor = id;
+    while let Some(ClipNode::Link { link, parent, .. }) = table.get(cursor) {
+        if let ClipLink::RoundedRect { space, .. } = link
+            && *space == candidate
+            && link.is_rounded()
+        {
+            return None;
+        }
+        cursor = *parent;
+    }
+    Some(candidate)
 }
 
 /// The coordinate system of the innermost rectangle `id` applies.
@@ -872,16 +919,19 @@ fn gpu_clip(clip: &ResolvedClip) -> GpuClip {
         space: NO_SPACE,
         kept_aabb: ResolvedClip::unbounded().aabb,
         kept_tests: 0,
-        pad: 0,
+        outer_space: NO_SPACE,
+        outer_aabb: ResolvedClip::unbounded().aabb,
     }
 }
 
 /// One chain resolved with the links of the system at `slot` kept, in the shader's form.
-fn gpu_kept(kept: &KeptClip, slot: u32) -> GpuClip {
+fn gpu_kept(kept: &KeptClip, slot: u32, outer: Option<u32>) -> GpuClip {
     GpuClip {
         space: slot,
         kept_aabb: kept.kept_aabb,
         kept_tests: kept.kept_tests,
+        outer_space: outer.unwrap_or(NO_SPACE),
+        outer_aabb: kept.outer_aabb,
         ..gpu_clip(&kept.clip)
     }
 }

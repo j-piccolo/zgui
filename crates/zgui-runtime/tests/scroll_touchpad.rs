@@ -98,7 +98,8 @@ impl Pad {
             modifiers: Modifiers::NONE,
             timestamp: Timestamp::from_origin(self.stamp),
         });
-        self.harness.settle(2);
+        // The frame that scrolls, and the one after it that tests the pointer's hover again.
+        self.harness.settle(3);
     }
 
     /// Fingers down, then each delta of `moves` in turn.
@@ -318,7 +319,7 @@ fn the_end_of_a_gesture_over_nothing_that_scrolls_still_lets_go() {
         modifiers: Modifiers::NONE,
         timestamp: Timestamp::from_origin(pad.stamp),
     });
-    pad.harness.settle(2);
+    pad.harness.settle(3);
     pad.run(40);
     assert!(
         pad.settled(),

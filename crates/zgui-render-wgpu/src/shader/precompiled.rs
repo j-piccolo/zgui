@@ -78,8 +78,47 @@ impl Module {
     /// the text it was encoded from describes what to draw, and a program that cannot read its own
     /// shaders draws nothing.
     pub fn representation(self) -> naga::Module {
+        if let Some(module) = self.on_disk() {
+            return module;
+        }
         bincode::deserialize(self.encoded())
             .unwrap_or_else(|error| panic!("{}: {error}", self.label()))
+    }
+
+    /// With `ZGUI_WGSL_DIR` set, this module assembled again from parts that may be read from that
+    /// directory, and parsed now: a shader experiment without a rebuild. Point `ZGUI_CACHE_DIR`
+    /// somewhere empty, or a pipeline cached from the built-in text is used.
+    fn on_disk(self) -> Option<naga::Module> {
+        std::env::var_os("ZGUI_WGSL_DIR")?;
+        let source = zgui_wgsl::module(self.name())?;
+        Some(
+            naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| {
+                panic!("{}: {}", self.label(), error.emit_to_string(&source))
+            }),
+        )
+    }
+
+    /// The name `zgui-wgsl` assembles this module under.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Quad => "quad",
+            Self::Shadow => "shadow",
+            Self::Decoration => "decoration",
+            Self::MonoSprite => "mono_sprite",
+            Self::ColorSprite => "color_sprite",
+            Self::SubpixelSprite => "subpixel_sprite",
+            Self::Blit => "blit",
+            Self::Clear => "clear",
+            Self::Blur => "blur",
+            Self::Composite => "composite",
+            Self::External => "external",
+            Self::Vector => "vector",
+            Self::MarksDisc => "marks_disc",
+            Self::MarksBox => "marks_box",
+            Self::MarksPolyline => "marks_polyline",
+            Self::MarksGlyph => "marks_glyph",
+            Self::MarksComposite => "marks_composite",
+        }
     }
 }
 

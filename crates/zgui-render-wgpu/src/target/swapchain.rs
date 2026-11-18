@@ -198,6 +198,7 @@ impl Offscreen {
     /// The usage a stand-in surface needs: copied into, and copied out of by a test.
     const USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
         .union(wgpu::TextureUsages::COPY_SRC)
+        .union(wgpu::TextureUsages::COPY_DST)
         .union(wgpu::TextureUsages::TEXTURE_BINDING);
 
     /// A stand-in surface of `size` presenting in `format`.

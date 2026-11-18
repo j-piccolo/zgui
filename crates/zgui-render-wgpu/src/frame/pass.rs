@@ -68,6 +68,9 @@ pub struct Recorder<'frame> {
     pub mark_extent: Size<i32, Device>,
     /// The frame's pass timing, when timing is on.
     pub(crate) timer: Option<&'frame mut GpuTimer>,
+    /// The pipeline every quad batch is drawn with: the one without dashes unless the frame has a
+    /// dashed or dotted border.
+    pub quads: PipelineKind,
 }
 
 impl<'frame> Recorder<'frame> {
@@ -122,7 +125,7 @@ impl<'frame> Recorder<'frame> {
                     self.record_pass(encoder, plan, run, &mut recorded);
                     index = end;
                 }
-                Segment::Round(_) => {}
+                Segment::Round(_) => index += 1,
             }
         }
         counter::add(Counter::DrawCalls, u64::from(recorded.draw_calls));
@@ -159,6 +162,13 @@ impl<'frame> Recorder<'frame> {
                 if read.is_empty() {
                     return;
                 }
+                zgui_profile::latency::note_with("gpu.copy", || {
+                    format!(
+                        "site=capture px={} box={}",
+                        read.size.width as i64 * read.size.height as i64,
+                        rect_note(region)
+                    )
+                });
                 encoder.copy_texture_to_texture(
                     texel_copy(from, read),
                     texel_copy(to, write),
@@ -202,12 +212,29 @@ impl<'frame> Recorder<'frame> {
         {
             return;
         }
+        let opening = planned;
         // Taken only for a pass that opens, because a query nothing writes would resolve to noise.
         let queries = self
             .timer
             .as_deref_mut()
-            .and_then(|timer| timer.pass(timed_work(planned.target)));
-        let Some(view) = self.view(planned.target) else {
+            .and_then(|timer| timer.pass(timed_work(opening.target)));
+        // Each damage rectangle's own queries, with `ZGUI_GPU_TIMING=rects`, taken before the pass
+        // borrows the targets, for the rectangles the loop below draws.
+        let rect_queries: Vec<Option<PassQueries>> = run
+            .clone()
+            .map(|planned| {
+                let scissor = scaled(planned.scissor, planned.target, extent);
+                if scissor.is_empty() {
+                    return None;
+                }
+                let at = planned.scissor;
+                let bounds = [at.origin.x, at.origin.y, at.size.width, at.size.height];
+                self.timer
+                    .as_deref_mut()
+                    .and_then(|timer| timer.rect(timed_work(opening.target), bounds))
+            })
+            .collect();
+        let Some(view) = self.view(opening.target) else {
             return;
         };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -217,7 +244,7 @@ impl<'frame> Recorder<'frame> {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: match planned.load {
+                    load: match opening.load {
                         PassLoad::Keep => wgpu::LoadOp::Load,
                         PassLoad::Discard => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                     },
@@ -240,14 +267,17 @@ impl<'frame> Recorder<'frame> {
             0.0,
             1.0,
         );
-        let mut pass = BoundPass::new(pass);
+        let mut pass = BoundPass::new(pass, opening.target, opening.scissor);
         let tables = self
             .buffers
             .frame_bind_group(self.gpu, self.pipelines.layouts());
-        for planned in run {
+        for (planned, timed) in run.zip(&rect_queries) {
             let scissor = scaled(planned.scissor, planned.target, extent);
             if scissor.is_empty() {
                 continue;
+            }
+            if let Some(queries) = timed {
+                queries.write_in(&mut pass.pass, 0);
             }
             pass.set_scissor_rect(
                 scissor.origin.x.max(0) as u32,
@@ -255,13 +285,22 @@ impl<'frame> Recorder<'frame> {
                 scissor.size.width.max(0) as u32,
                 scissor.size.height.max(0) as u32,
             );
-            for draw in plan.draws_of(planned) {
+            pass.scissor = planned.scissor;
+            for (offset, draw) in plan.draws_of(planned).iter().enumerate() {
+                pass.ink = plan
+                    .ink
+                    .get(planned.draws.start + offset)
+                    .cloned()
+                    .flatten();
                 let issued = self.issue(&mut pass, planned, tables.as_ref(), draw, format);
                 if issued {
                     recorded.draw_calls += 1;
                 } else {
                     recorded.dropped += 1;
                 }
+            }
+            if let Some(queries) = timed {
+                queries.write_in(&mut pass.pass, 1);
             }
         }
     }
@@ -290,7 +329,12 @@ impl<'frame> Recorder<'frame> {
                 pass.draw(0..4, 0..1);
                 true
             }
-            PlannedDraw::Batch(batch) => self.batch(pass, planned, tables, batch.clone(), format),
+            PlannedDraw::Batch(batch) => {
+                self.batch(pass, planned, tables, batch.clone(), format, false)
+            }
+            PlannedDraw::Replace(batch) => {
+                self.batch(pass, planned, tables, batch.clone(), format, true)
+            }
             PlannedDraw::Blur {
                 source,
                 params,
@@ -429,12 +473,14 @@ impl<'frame> Recorder<'frame> {
         tables: Option<&wgpu::BindGroup>,
         batch: Batch,
         format: wgpu::TextureFormat,
+        replacing: bool,
     ) -> bool
     where
         'frame: 'pass,
     {
         let (kind, range, texture) = match batch {
-            Batch::Quads(range) => (PipelineKind::Quad, range, None),
+            Batch::Quads(range) if replacing => (PipelineKind::QuadReplace, range, None),
+            Batch::Quads(range) => (self.quads, range, None),
             Batch::Shadows(range) => (PipelineKind::Shadow, range, None),
             Batch::Decorations(range) => (PipelineKind::Decoration, range, None),
             Batch::MonoSprites { texture, range } => {
@@ -507,7 +553,20 @@ impl<'frame> Recorder<'frame> {
         let order = &buffers.orders[lane];
         let stride = core::mem::size_of::<crate::buffer::persist::OrderEntry>() as u64;
         pass.set_vertex_buffer(0, order.slice_from(range.start as u64 * stride));
-        pass.draw(0..4, 0..(range.end - range.start) as u32);
+        // A shadow is a ring of ten strip vertices around the core of its box, and so is a quad,
+        // around the inside of an unfilled one. Other kinds are quads.
+        let vertices = if matches!(
+            kind,
+            PipelineKind::Shadow
+                | PipelineKind::Quad
+                | PipelineKind::QuadSolid
+                | PipelineKind::QuadReplace
+        ) {
+            0..10
+        } else {
+            0..4
+        };
+        pass.draw(vertices, 0..(range.end - range.start) as u32);
         true
     }
 
@@ -789,15 +848,23 @@ struct BoundPass<'pass> {
     pipeline: Option<Bound>,
     /// The bind group and the dynamic offset bound last at each index.
     groups: [Option<(wgpu::BindGroup, Option<u32>)>; BIND_SLOTS],
+    /// What the pass draws into and its scissor, for the latency trace.
+    target: TargetRef,
+    scissor: Rect<i32, Device>,
+    /// What the planned draw being issued covers, when the trace is listening and it is known.
+    ink: Option<crate::frame::reach::Ink>,
 }
 
 impl<'pass> BoundPass<'pass> {
     /// `pass`, with nothing bound yet.
-    fn new(pass: wgpu::RenderPass<'pass>) -> Self {
+    fn new(pass: wgpu::RenderPass<'pass>, target: TargetRef, scissor: Rect<i32, Device>) -> Self {
         Self {
             pass,
             pipeline: None,
             groups: Default::default(),
+            target,
+            scissor,
+            ink: None,
         }
     }
 
@@ -845,8 +912,62 @@ impl<'pass> BoundPass<'pass> {
 
     /// Draws `instances` of a strip of `vertices`.
     fn draw(&mut self, vertices: core::ops::Range<u32>, instances: core::ops::Range<u32>) {
+        let count = instances.len();
         self.pass.draw(vertices, instances);
+        // One note per draw call, in issue order: the order the device runs them in, so a
+        // driver's per-draw timings (Mesa's INTEL_MEASURE) line up with these one to one.
+        zgui_profile::latency::note_with("gpu.draw", || {
+            let fs = match self.pipeline {
+                Some(Bound::Kind(kind)) => kind.fragment_entry(),
+                Some(Bound::Effect(_)) => "effect",
+                None => "none",
+            };
+            let target = match self.target {
+                TargetRef::Composed => "composed",
+                TargetRef::Pool(_) => "group",
+                TargetRef::MarksPage(_) => "marks",
+            };
+            let scissor = rect_note(self.scissor);
+            match &self.ink {
+                Some(ink) => format!(
+                    "fs={fs} n={count} target={target} scissor={scissor} px={} box={} owners={}",
+                    ink.pixels,
+                    rect_note(ink.covered),
+                    owners_note(&ink.owners)
+                ),
+                // A full-target quad (a clear, a composite, a filter) covers the scissor.
+                None if matches!(self.pipeline, Some(Bound::Kind(PipelineKind::DamageClear))) => {
+                    format!(
+                        "fs={fs} n={count} target={target} scissor={scissor} px={} box={scissor}",
+                        self.scissor.size.width as i64 * self.scissor.size.height as i64
+                    )
+                }
+                None => {
+                    format!("fs={fs} n={count} target={target} scissor={scissor} box={scissor}")
+                }
+            }
+        });
     }
+}
+
+/// `rect` as the latency trace writes one: `x,y,width,height`.
+pub(crate) fn rect_note(rect: Rect<i32, Device>) -> String {
+    format!(
+        "{},{},{},{}",
+        rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
+    )
+}
+
+/// The chunk revisions a draw covers and the pixels of each, as `rev:px,rev:px`.
+fn owners_note(owners: &[(u64, u64)]) -> String {
+    let mut note = String::new();
+    for (revision, pixels) in owners {
+        if !note.is_empty() {
+            note.push(',');
+        }
+        note.push_str(&format!("{revision}:{pixels}"));
+    }
+    note
 }
 
 /// The kind of work a pass into `target` is timed as.

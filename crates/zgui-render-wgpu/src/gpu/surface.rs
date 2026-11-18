@@ -161,7 +161,10 @@ impl ConfiguredSurface {
         );
 
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // Copied into where the device allows it: a copy moves the composed frame for less
+            // than the draw that otherwise does.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | (capabilities.usages & wgpu::TextureUsages::COPY_DST),
             format: formats.surface,
             // `Auto` keeps sRGB, or extended linear sRGB for an fp16 format, which is what the
             // compositing shaders encode for.

@@ -18,6 +18,9 @@ pub enum PlannedDraw {
     Clear,
     /// One batch of the display list, drawn instanced out of the frame's buffers.
     Batch(Batch),
+    /// The one quad a rectangle starts at, drawn without blending: it lands where the clear would
+    /// have left nothing, so writing it is what blending it over the clear would have written.
+    Replace(Batch),
     /// One filtering pass of the blur chain, reading `source`.
     Blur {
         /// What it reads.

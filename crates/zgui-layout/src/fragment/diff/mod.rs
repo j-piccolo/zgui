@@ -794,6 +794,19 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
             .bounds_placed(clip, &|id| self.resolve(id))
     }
 
+    /// What a fragment's clip chain admitted in the frame before, through the matrices it was
+    /// drawn under then.
+    fn admits_before(&self, clip: ClipId) -> Rect<DevicePx, Device> {
+        let tables = &*self.tables;
+        tables.clips.bounds_placed(clip, &|id| {
+            tables
+                .drawn
+                .get(id)
+                .copied()
+                .or_else(|| tables.spatial.resolve(id))
+        })
+    }
+
     /// What a fragment's chain admits, as a region damage may be cut to.
     fn admitted(&self, clip: ClipId) -> Admitted {
         Admitted(self.admits(clip))
@@ -883,13 +896,27 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
         // top of it — behind a union that can never overlap itself.
         let inks_mark = self.scratch.child_inks.len();
         let mut ink = Rect::ZERO;
+        // What the box itself paints, for the overlap test alone. A box that paints nothing has
+        // an ink as large as its border box, which stays its ink for damage; but it puts no pixel
+        // under its children, so it cannot double-darken one. Measured with the border box, every
+        // box with children overlapped them, and an opacity over any of them took a target.
+        let mut own_paint = Rect::ZERO;
+        // A drawing or a custom element draws what layout cannot see, shapes that may overlap
+        // one another inside the one piece. Its own opacity still folds, as it always has; but
+        // to whatever is above it, it is not disjoint, so an ancestor's opacity is not folded
+        // into overlapping shapes, which would show each overlap brighter.
+        let mut draws_unseen = false;
         for (slot, index) in fragments.clone().enumerate() {
             let frag = self.scratch.written[index];
             let Some(fragment) = self.store.fragment(frag) else {
                 continue;
             };
+            draws_unseen |= draws_unseen_shapes(fragment.kind);
             if slot == 0 {
                 ink = fragment.ink;
+                if !paints_nothing_itself(fragment.kind, fragment.flags) {
+                    own_paint = fragment.ink;
+                }
             } else {
                 self.scratch.child_inks.push(fragment.ink);
             }
@@ -1051,7 +1078,7 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
         // damage set and no emission decision is an input to it: a frame that painted half the
         // subtree decides exactly what a frame that painted all of it decides.
         let child_inks = &self.scratch.child_inks[inks_mark..];
-        disjoint &= !child_inks.iter().any(|child| overlaps(ink, *child));
+        disjoint &= !child_inks.iter().any(|child| overlaps(own_paint, *child));
         disjoint &= pairwise_disjoint(child_inks);
 
         self.chase = here;
@@ -1117,7 +1144,7 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
             subtree_ink,
             blending,
             reads: below || placed.blends || placed.flags.contains(FragmentFlags::FILTERS_BACKDROP),
-            disjoint,
+            disjoint: disjoint && !draws_unseen,
             rigid,
             order,
             anchor: Some(placed.anchor),
@@ -1436,7 +1463,8 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
                 .flags
                 .contains(FragmentFlags::HAS_BLENDING_DESCENDANT);
             reads |= fragment.flags.intersects(FragmentFlags::READS_BACKDROP);
-            disjoint &= fragment.subtree_disjoint;
+            // As the walk reports it upward: a drawing's own pieces are not disjoint to its parent.
+            disjoint &= fragment.subtree_disjoint && !draws_unseen_shapes(fragment.kind);
             rigid &= fragment.subtree_rigid;
         }
         // Every piece of a box spans the box's range, which counts once a piece resolved.
@@ -2206,7 +2234,12 @@ struct InlineEffects {
 }
 
 /// Whether a piece is a box whose own painting is nothing.
-fn paints_nothing_itself(kind: FragmentKind, flags: FragmentFlags) -> bool {
+/// Whether a piece draws shapes layout does not lay out, which may overlap one another.
+pub(super) fn draws_unseen_shapes(kind: FragmentKind) -> bool {
+    matches!(kind, FragmentKind::Vector | FragmentKind::Custom)
+}
+
+pub(super) fn paints_nothing_itself(kind: FragmentKind, flags: FragmentFlags) -> bool {
     kind == FragmentKind::Box && flags.contains(FragmentFlags::PAINTS_NOTHING)
 }
 

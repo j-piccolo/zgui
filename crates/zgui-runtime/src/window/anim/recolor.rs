@@ -14,6 +14,7 @@
 use zgui_dom::NodeKey;
 use zgui_dom::side::{AnimOverride, BoxKey};
 use zgui_geom::{DevicePx, Edges};
+use zgui_layout::FragmentKind;
 use zgui_layout::fragment::diff::pixels;
 use zgui_paint::OwnedPaints;
 use zgui_scene::{PaintRewrite, PropertyOwner};
@@ -28,7 +29,11 @@ impl Writing<'_> {
     /// `values` drives, and each of those slots took its colour. A box with no record, or a nested
     /// inline box that the lines it is on paint, takes the fragment pass.
     pub(super) fn write_colors(&mut self, node: NodeKey, values: &AnimOverride) -> bool {
-        if !OwnedPaints::any(values) {
+        // Text is drawn through no owned slot, so a moving `color` repaints the lines.
+        if !OwnedPaints::any(values) || values.color.is_some() {
+            if values.color.is_some() {
+                self.damage_subtree_ink(node);
+            }
             return false;
         }
         self.damage_own_ink(node);
@@ -67,6 +72,97 @@ impl Writing<'_> {
         written
     }
 
+    /// Whether `node`'s `color` reaches nothing but text, and the colours of its own boxes the
+    /// override carries.
+    ///
+    /// A box below it follows the colour when it computed the same colour as its parent, which is
+    /// what inheriting it leaves; one that computed another sets its own and is passed over with
+    /// everything below it. Whatever follows may draw text and nothing else in the colour: no
+    /// picture or drawing (an icon is drawn in `currentColor`), no shadow or decoration, and, below
+    /// the element itself, no `currentColor` background, border or outline.
+    pub(super) fn own_text_only(&self, node: NodeKey) -> bool {
+        let boxes = self.layout.boxes_of(node);
+        let Some(first) = boxes.first().and_then(|key| self.layout.get(*key)) else {
+            return false;
+        };
+        let color = first.style.get_inherited_text().color;
+        let mut stack: Vec<(BoxKey, _)> = boxes.iter().map(|key| (*key, color)).collect();
+        while let Some((key, parent)) = stack.pop() {
+            let Some(box_) = self.layout.get(key) else {
+                return false;
+            };
+            let style = &box_.style;
+            let element = box_.source.is_some_and(|source| source != node);
+            let text = style.get_inherited_text();
+            // One that would run a transition of its own as the colour moves under it.
+            if element && zgui_style::transitions_text_color(style) {
+                return false;
+            }
+            if element && text.color != parent {
+                continue;
+            }
+            if !style.get_effects().box_shadow.0.is_empty()
+                || !text.text_shadow.0.is_empty()
+                || !style.get_text().text_decoration_line.is_empty()
+            {
+                return false;
+            }
+            if element {
+                let border = style.get_border();
+                // `currentColor` is every border's and outline's initial colour; only one drawn
+                // reads it.
+                let sides = [
+                    (
+                        &border.border_top_color,
+                        border.border_top_style,
+                        &border.border_top_width,
+                    ),
+                    (
+                        &border.border_right_color,
+                        border.border_right_style,
+                        &border.border_right_width,
+                    ),
+                    (
+                        &border.border_bottom_color,
+                        border.border_bottom_style,
+                        &border.border_bottom_width,
+                    ),
+                    (
+                        &border.border_left_color,
+                        border.border_left_style,
+                        &border.border_left_width,
+                    ),
+                ];
+                let outline = style.get_outline();
+                if style.get_background().background_color.is_currentcolor()
+                    || sides.iter().any(|(color, style, width)| {
+                        color.is_currentcolor()
+                            && !style.none_or_hidden()
+                            && width.0 > zgui_css::Au(0)
+                    })
+                    || (outline.outline_color.is_currentcolor()
+                        && !outline.outline_style.none_or_hidden()
+                        && outline.outline_width.0 > zgui_css::Au(0))
+                {
+                    return false;
+                }
+            }
+            for frag in self.layout.fragments_of_box(key) {
+                let Some(fragment) = self.layout.fragment(*frag) else {
+                    continue;
+                };
+                match fragment.kind {
+                    FragmentKind::Line { .. }
+                    | FragmentKind::TextRun { .. }
+                    | FragmentKind::Box => {}
+                    _ => return false,
+                }
+            }
+            stack.extend(box_.children.iter().map(|child| (*child, text.color)));
+        }
+        true
+    }
+
     /// The border widths of the box `key`, read off its first fragment as the emission reads them.
     fn border_of(&self, key: BoxKey) -> Edges<DevicePx> {
         self.layout
@@ -78,8 +174,31 @@ impl Writing<'_> {
 
     /// Damages `node`'s ink when the override it dropped held colours [`OwnedPaints`] accepts.
     pub(super) fn damage_uncolored(&mut self, node: NodeKey, was: &AnimOverride) {
-        if OwnedPaints::any(was) {
+        if was.color.is_some() {
+            self.damage_subtree_ink(node);
+        } else if OwnedPaints::any(was) {
             self.damage_own_ink(node);
+        }
+    }
+
+    /// Damages everything `node`'s boxes and the boxes below them draw, cut to each one's clip:
+    /// the lines a moving `color` paints hang from anonymous boxes below the element.
+    fn damage_subtree_ink(&mut self, node: NodeKey) {
+        let scene = &*self.scene;
+        let resolve = |id| scene.spatial.resolve(id);
+        for key in self.layout.boxes_of(node) {
+            for frag in self.layout.fragments_of_box(*key) {
+                let Some(fragment) = self.layout.fragment(*frag) else {
+                    continue;
+                };
+                let ink = fragment.on_device_in(fragment.subtree_ink, &scene.spatial);
+                let admitted = scene.clips.bounds_placed(fragment.clip, &resolve);
+                if let Some(rect) = ink.intersection(admitted)
+                    && !rect.is_empty()
+                {
+                    self.damage.absorb(pixels(rect));
+                }
+            }
         }
     }
 

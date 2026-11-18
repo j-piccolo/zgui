@@ -13,6 +13,7 @@
 //! wholly uninitialised resource on every acquisition and comes out black everywhere a partial
 //! copy did not write.
 
+pub mod age;
 pub mod build;
 pub mod damage;
 pub mod fault;

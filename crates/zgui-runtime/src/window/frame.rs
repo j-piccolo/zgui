@@ -527,7 +527,15 @@ impl Window {
         // appeared or went wrote the hit index, and a frame that wrote nothing there leaves the
         // pointer over exactly what it was over.
         mark("f.rehit");
-        if self.hit.generation() != self.rehit_seen {
+        // Hover holds while a container scrolls, as in a browser. Content that moves under a
+        // still pointer would otherwise hover every element it passes, and each hover is a
+        // restyle and a transition. The retest runs on the first frame after the scroll stops: an
+        // animating scroll asks for its own frames, and a settled one asks for one more here.
+        if !self.scrolled_this_frame.is_empty() || self.is_scrolling() {
+            if self.hit.generation() != self.rehit_seen && !self.is_scrolling() {
+                self.request_frame();
+            }
+        } else if self.hit.generation() != self.rehit_seen {
             self.rehit_seen = self.hit.generation();
             counter::bump(Counter::HitRetests);
             self.rehit();
@@ -707,6 +715,8 @@ impl Window {
             probe.frame_ended(self);
         }
 
+        // What the frame did, beside how long it took.
+        zgui_profile::latency::note_counters();
         zgui_profile::latency::note_with("f.end", || {
             format!(
                 "{outcome:?} another={needs_another_frame} owed={owed} \
@@ -1452,6 +1462,7 @@ impl Window {
         // with nothing in it. Skipped entirely when no pass ran, because then no extent moved.
         if relaid_out {
             self.clamp_scroll_to_content();
+            self.images.layout_changed();
         }
         // After the clamp, so a scroll is measured against the extents this pass produced, and
         // before the fragment pass, which composes what it moves.
@@ -1634,7 +1645,20 @@ impl Window {
             // moving pixels the renderer already has replaces the whole port with the bands the
             // move leaves undefined, and everything the frame damaged for any *other* reason is
             // kept and drawn over them.
-            shift = self.scroll_shift(viewport).ok();
+            let shifted = self.scroll_shift(viewport);
+            // Why not, for the trace: a list that never shifts is a different bug from one that
+            // shifts, and the refusal says whose.
+            let refused = shifted.as_ref().err().copied();
+            let (moved, whole, beside, apart) = match shifted {
+                Ok(shifted) => (
+                    Some(shifted.moved),
+                    Some(shifted.port),
+                    shifted.beside,
+                    shifted.apart,
+                ),
+                Err(_) => (None, None, Vec::new(), Vec::new()),
+            };
+            shift = moved;
             if let Some(shift) = shift {
                 // Everything this frame owes that the copy does not answer: what it owed before
                 // any layout pass, what the passes damaged beyond their movement, what the stages
@@ -1652,12 +1676,49 @@ impl Window {
                 self.damage.absorb_set(&self.rigid_moves.beyond);
                 self.damage.absorb_set(&self.damage_after_layout);
                 shift.expose_into(&mut self.damage);
+                // The bands what does not scroll is drawn in were not moved: drawn again, whole.
+                for &band in &beside {
+                    self.damage.absorb(band);
+                }
+                if let Some(whole) = whole {
+                    self.damage = super::scroll::shift::across(&self.damage, whole, shift.by);
+                }
             }
             self.damage
                 .clip_to(zgui_geom::Rect::new(zgui_geom::Point::new(0, 0), viewport));
             zgui_profile::latency::note_with("d.postshift", || {
+                // The element a document refusal names, as a selector.
+                let by = refused
+                    .and_then(super::scroll::shift::Refused::element)
+                    .and_then(|node| {
+                        let document = self.document.try_borrow().ok()?;
+                        Some(crate::window::owners::name(&document, node))
+                    })
+                    .unwrap_or_default();
+                // What the shift moved around, by element: the bands beside the moved part are
+                // theirs.
+                let apart = self
+                    .document
+                    .try_borrow()
+                    .map(|document| {
+                        apart
+                            .iter()
+                            .map(|(node, ink)| {
+                                let name = node
+                                    .map(|node| crate::window::owners::name(&document, node))
+                                    .unwrap_or_default();
+                                format!(
+                                    "{name} @ {},{},{},{}",
+                                    ink.origin.x, ink.origin.y, ink.size.width, ink.size.height
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    })
+                    .unwrap_or_default();
                 format!(
-                    "by={:?} inherited={:?} beyond={:?} after={:?}",
+                    "by={:?} beside={beside:?} refused={refused:?} {by} apart=[{apart}] \
+                     inherited={:?} beyond={:?} after={:?}",
                     shift.map(|s| s.by),
                     self.damage_before_layout.rects(),
                     self.rigid_moves.beyond.rects(),
@@ -1736,6 +1797,9 @@ impl Window {
             // rather than the one being composed, which is the same reading the damage rectangles
             // for those marks were absorbed under.
             let placements = self.host.placements();
+            // The walk descends where the frame redraws and where a moved box was last composed.
+            let mut walked = self.damage;
+            walked.absorb_set(&std::mem::take(&mut self.walk_reach));
             let input = PaintInput {
                 scale: self.scale,
                 capabilities,
@@ -1781,7 +1845,10 @@ impl Window {
                 // A full set means the surface and nothing more. Without the bound, the walk visits
                 // every fragment of the document, also the rows of a long scroll container.
                 surface: Some(zgui_geom::Rect::new(zgui_geom::Point::new(0, 0), viewport)),
-                ..PaintInput::new(&layout, &self.damage)
+                // Named in the latency trace, so the renderer's per-draw notes can be put on the
+                // elements that drew them.
+                record_chunks: zgui_profile::latency::listening(),
+                ..PaintInput::new(&layout, &walked)
             };
             zgui_profile::latency::note_with("d.postexpand", || {
                 format!(
@@ -1792,9 +1859,17 @@ impl Window {
                     self.damage.rects()
                 )
             });
+            // After the damage grew: what the frame draws again, against what its shift moved.
+            if let (Some(moved), Some(whole)) = (shift, whole) {
+                zgui_profile::latency::note_with("shift.acct", || {
+                    super::scroll::shift::account(&self.damage, whole, moved.port)
+                });
+            }
             mark("p.emit");
             let before = glyph_counts();
             let report = self.painter.emit(&input, &mut self.scene);
+            crate::window::owners::note(&document, &report.chunks);
+            crate::window::owners::note_groups(&document, &report.group_whys);
             vector_report = report.vector_routes;
             self.layers_owed = report.layers_owed;
             let after = glyph_counts();

@@ -12,11 +12,13 @@ pub(super) fn unchanged(old: &ComputedValues, new: &ComputedValues) -> bool {
 
 /// Whether the properties that decide what kind of box an element is, and what contains it, agree.
 ///
-/// The transform test is not a property comparison: a transform is a containing block for
-/// positioned descendants, so it is *whether there is one* that changes the tree rather than what
-/// it is, and a rotation changing by two degrees moves nothing.
+/// Whether there is a transform or a filter is not among them: the box builder consults only
+/// `position` for a containing block (`boxtree::absolute`), so a transform starting or stopping
+/// leaves the tree as it is. It changes painting, and costs a [`geometry`] pass instead.
+///
+/// [`geometry`]: crate::stylo::element::damage::classify::geometry
 fn kind(old: &ComputedValues, new: &ComputedValues) -> bool {
-    let unmoved = same!(
+    same!(
         old,
         new,
         get_box,
@@ -39,11 +41,7 @@ fn kind(old: &ComputedValues, new: &ComputedValues) -> bool {
             zoom,
             _servo_top_layer,
         ]
-    );
-    unmoved
-        && old.get_box().has_transform_or_perspective()
-            == new.get_box().has_transform_or_perspective()
-        && old.get_effects().filter.0.is_empty() == new.get_effects().filter.0.is_empty()
+    )
 }
 
 /// Whether where the box is written among its siblings agrees.
