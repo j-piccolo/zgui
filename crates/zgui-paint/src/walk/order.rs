@@ -76,6 +76,9 @@ pub struct Emission<'a> {
     /// `background-image` does not inherit, and a line box belongs to an anonymous box generated
     /// below whatever declared it.
     pub text_fill: Option<&'a crate::lower::background::GradientSpec>,
+    /// The animated `color` the text at this fragment is drawn in, already faded, when an element
+    /// above it is animating one; the run's brush slot holds where the animation began.
+    pub text_color: Option<zgui_color::Color>,
     /// The parts of nested inline boxes a line paints, in tree order.
     ///
     /// Empty for every fragment that is not a line with [`FragmentFlags::INLINE_EFFECTS`]. Their
@@ -237,6 +240,7 @@ fn content_tracked(
                 style,
                 text::Inherited {
                     text_fill: emission.text_fill,
+                    text_color: emission.text_color,
                     decorations: emission.decorations,
                     inline: emission.inline,
                     alpha: emission.alpha,
@@ -265,6 +269,7 @@ fn content_tracked(
             style,
             text::Inherited {
                 text_fill: emission.text_fill,
+                text_color: emission.text_color,
                 decorations: emission.decorations,
                 inline: &[],
                 alpha: emission.alpha,

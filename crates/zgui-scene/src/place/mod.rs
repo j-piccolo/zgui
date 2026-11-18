@@ -30,12 +30,32 @@ pub mod band;
 pub mod ink;
 
 use zgui_bits::DamageSet;
-use zgui_geom::{DevicePx, Matrix4, Size, transformed_bounds};
+use zgui_geom::{Device, DevicePx, Matrix4, Rect, Size, transformed_bounds};
 use zgui_profile::{Counter, counter};
 
 use crate::place::band::Travel;
 use crate::scene::Scene;
 use crate::spatial::SpatialId;
+
+/// What a moving coordinate system's subtree covered when its last write read the display list.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HeldInk {
+    /// Everything drawn through it, in its own coordinates.
+    under: Rect<DevicePx, Device>,
+    /// Where that was drawn on the device, each primitive cut to its clip.
+    drawn: Option<Rect<DevicePx, Device>>,
+}
+
+/// The union of two rectangles either of which may be missing.
+fn either(
+    a: Option<Rect<DevicePx, Device>>,
+    b: Option<Rect<DevicePx, Device>>,
+) -> Option<Rect<DevicePx, Device>> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.union(b)),
+        (a, b) => a.or(b),
+    }
+}
 
 /// What one placement write did, and what it left owed.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -56,6 +76,12 @@ pub struct Placement {
     /// A refusal with this set is the ordering hazard being caught; a refusal without it is a box
     /// that never declared a region, or a coordinate system that is no longer live.
     pub escaped: bool,
+    /// Where the box's primitives were drawn in the frame on the screen, each cut to its clip, or
+    /// `None` when that is not known.
+    ///
+    /// What a walk that reads the drawn frame's matrices has to reach for the box to be emitted
+    /// again, still or moving: the primitives a clip hides are refused whatever is emitted.
+    pub drawn: Option<Rect<i32, Device>>,
 }
 
 impl Placement {
@@ -69,6 +95,7 @@ impl Placement {
             damage: DamageSet::new(),
             written: false,
             escaped,
+            drawn: None,
         }
     }
 }
@@ -93,6 +120,22 @@ impl Scene {
     /// order it was given would go on being the order of a rectangle nothing occupies.
     pub fn withdraw_travel(&mut self, node: SpatialId) {
         self.travel.withdraw(node);
+        self.held_ink.remove(&node);
+    }
+
+    /// Records that this frame does not emit `node`'s subtree again, because its write moved
+    /// nothing: what it drew is already right, and walking it is the frame's largest cost.
+    ///
+    /// Its primitives are then missing from the next frame's display list, which is where a write
+    /// reads where the box is drawn. So the next write reads what this one held as well.
+    pub fn note_unreached(&mut self, node: SpatialId) {
+        self.unreaching.push(node);
+    }
+
+    /// Starts a frame's writes: what the last frame left unemitted is what these read from the
+    /// held ink.
+    pub fn begin_writes(&mut self) {
+        self.unreached = core::mem::take(&mut self.unreaching);
     }
 
     /// The region declared for a coordinate system, if one is.
@@ -126,7 +169,14 @@ impl Scene {
     /// in advance therefore converges on one within a cycle, instead of paying a composition on
     /// every frame for ever.
     pub fn widen_travel(&mut self, node: SpatialId, local: Matrix4) {
-        let Some(subtree) = ink::under(self, node) else {
+        // A subtree the frame on the screen did not emit is missing from the list, wholly or in
+        // part, and what the last write held stands in for it: its matrix has not moved since.
+        let held = self
+            .unreached
+            .contains(&node)
+            .then(|| self.held_ink.get(&node).copied())
+            .flatten();
+        let Some(subtree) = either(ink::under(self, node), held.map(|held| held.under)) else {
             return;
         };
         let (Some(before), Some(above)) = (self.spatial.resolve(node), self.above(node)) else {
@@ -210,9 +260,9 @@ impl Scene {
         let Some(travel) = self.travel.of(node) else {
             return Placement::refused(false);
         };
-        let Some(before) = self.spatial.resolve(node) else {
+        if self.spatial.resolve(node).is_none() {
             return Placement::refused(false);
-        };
+        }
         // The chain above the node, so where the box *would* land can be asked before anything is
         // written — a refusal has to leave the matrix exactly as it found it.
         let Some(above) = self.above(node) else {
@@ -220,7 +270,14 @@ impl Scene {
         };
         let after = local.then(&above);
 
-        let Some(subtree) = ink::under(self, node) else {
+        // A subtree the frame on the screen did not emit is missing from the list, wholly or in
+        // part, and what the last write held stands in for it: its matrix has not moved since.
+        let held = self
+            .unreached
+            .contains(&node)
+            .then(|| self.held_ink.get(&node).copied())
+            .flatten();
+        let Some(subtree) = either(ink::under(self, node), held.map(|held| held.under)) else {
             // Nothing is drawn through this coordinate system, so nothing moves when it does. The
             // write still happens: a box with no ink of its own can have descendants that acquire
             // some later, and leaving the matrix stale would draw them where the animation started.
@@ -232,21 +289,32 @@ impl Scene {
                 damage: DamageSet::new(),
                 written: true,
                 escaped: false,
+                drawn: None,
             };
         };
 
         let arrived = transformed_bounds(&after, subtree);
+        let was = either(
+            crate::place::ink::on_device(self, node),
+            held.and_then(|held| held.drawn),
+        );
         if !travel.admits(arrived) {
             let mut refused = Placement::refused(true);
-            refused
-                .damage
-                .absorb(crate::place::ink::whole(transformed_bounds(
-                    &before, subtree,
-                )));
+            if let Some(was) = was {
+                refused.damage.absorb(crate::place::ink::whole(was));
+            }
             return refused;
         }
 
+        let drawn = was.map(crate::place::ink::whole);
         if !self.spatial.place(node, local) {
+            self.held_ink.insert(
+                node,
+                HeldInk {
+                    under: subtree,
+                    drawn: was,
+                },
+            );
             // The matrix already held. Nothing moved, so nothing is damaged, and counting this as
             // a saved re-emission would make the skip read high on every frame of an animation that
             // has stopped.
@@ -254,19 +322,32 @@ impl Scene {
                 damage: DamageSet::new(),
                 written: true,
                 escaped: false,
+                drawn,
             };
         }
         counter::bump(Counter::PlaceWritesWithoutReemit);
 
+        // Where the held part is now is not cut to its clips: the list does not hold it to cut.
+        let now = either(
+            crate::place::ink::on_device(self, node),
+            held.map(|_| arrived),
+        );
+        self.held_ink.insert(
+            node,
+            HeldInk {
+                under: subtree,
+                drawn: now,
+            },
+        );
         let mut damage = DamageSet::new();
-        damage.absorb(crate::place::ink::whole(transformed_bounds(
-            &before, subtree,
-        )));
-        damage.absorb(crate::place::ink::whole(arrived));
+        for rect in [was, now].into_iter().flatten() {
+            damage.absorb(crate::place::ink::whole(rect));
+        }
         Placement {
             damage,
             written: true,
             escaped: false,
+            drawn,
         }
     }
 }

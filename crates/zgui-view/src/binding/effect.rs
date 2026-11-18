@@ -40,11 +40,26 @@ impl Binding {
             }
             ReactiveValue::Dynamic(compute) => {
                 let mut previous: Option<T> = None;
+                // Whose closure this is, for the trace's note of each write (`origin`).
+                let origin =
+                    super::origin::take(std::rc::Rc::as_ptr(&compute).cast::<()>() as usize);
                 let sink = cx.with_owner(|| {
                     Sink::new(move || {
+                        // Every run, for the trace, whether or not it writes: a binding that reruns
+                        // each frame to compute what it already holds costs its closure, and the
+                        // writes alone cannot show that.
+                        let traced = zgui_profile::latency::tracing_elements();
+                        let started = traced.then(std::time::Instant::now);
                         let next = compute();
-                        if previous.as_ref() != Some(&next) {
-                            write(&next);
+                        let changed = previous.as_ref() != Some(&next);
+                        if let Some(started) = started {
+                            let took = started.elapsed().as_nanos();
+                            zgui_profile::latency::note_with("bind.run", || {
+                                format!("by={} changed={changed} ns={took}", origin.unwrap_or("?"))
+                            });
+                        }
+                        if changed {
+                            super::origin::writing(origin, || write(&next));
                         }
                         previous = Some(next);
                     })

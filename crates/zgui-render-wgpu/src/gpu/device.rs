@@ -17,11 +17,19 @@ use crate::gpu::loss::DeviceLoss;
 /// all rather than one that renders slightly worse text.
 ///
 /// Timestamp queries are asked for only when [pass timing](crate::gpu::timing) was asked for, so
-/// the default device keeps its default feature set.
+/// the default device keeps its default feature set. Timestamps inside an encoder time the copies
+/// and the frame's span.
 fn optional_features() -> wgpu::Features {
     let features = wgpu::Features::DUAL_SOURCE_BLENDING | wgpu::Features::PIPELINE_CACHE;
     if crate::gpu::timing::requested() {
-        features | wgpu::Features::TIMESTAMP_QUERY
+        let timing = features
+            | wgpu::Features::TIMESTAMP_QUERY
+            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        if crate::gpu::timing::rects_requested() {
+            timing | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
+        } else {
+            timing
+        }
     } else {
         features
     }

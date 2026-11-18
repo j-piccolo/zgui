@@ -168,6 +168,13 @@ pub struct Scene {
     /// Read when a matrix is written after the ordering is done, which is the one moment the
     /// order a primitive already holds can stop being the right one. See [`mod@crate::place`].
     pub(crate) travel: Travels,
+    /// What each moving coordinate system's subtree covered, in its own terms, and where it was
+    /// drawn on the device, as the last write found them. See [`Scene::note_unreached`].
+    pub(crate) held_ink: rustc_hash::FxHashMap<SpatialId, crate::place::HeldInk>,
+    /// The coordinate systems whose write the frame on the screen did not emit again.
+    pub(crate) unreached: Vec<SpatialId>,
+    /// The ones this frame's writes are leaving unemitted, which the next frame's are told of.
+    pub(crate) unreaching: Vec<SpatialId>,
     /// Orders forced by an explicitly pushed layer, innermost last.
     layer_stack: Vec<DrawOrder>,
     /// The order the next primitive pushed is to take, set for the length of one replayed push.
@@ -333,6 +340,9 @@ impl Scene {
             kept_placements: crate::spatial::Placements::new(),
             kept_stamp: 0,
             travel: Travels::new(),
+            held_ink: rustc_hash::FxHashMap::default(),
+            unreached: Vec::new(),
+            unreaching: Vec::new(),
             layer_stack: Vec::new(),
             forced_orders: Vec::new(),
             markers: Markers::default(),

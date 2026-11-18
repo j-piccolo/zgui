@@ -110,6 +110,18 @@ pub fn signature(fill: Option<&GradientSpec>) -> u64 {
     hash.finish()
 }
 
+/// A fingerprint of an animated text colour, apart from every ramp's.
+pub fn color_signature(color: &zgui_color::Color) -> u64 {
+    let [r, g, b, a] = color.to_premultiplied_srgb();
+    zgui_scene::ContentHash::new()
+        .u32(2)
+        .f32(r)
+        .f32(g)
+        .f32(b)
+        .f32(a)
+        .finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::TextFills;

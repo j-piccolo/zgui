@@ -138,7 +138,11 @@ struct Clip {
     space: u32,
     // Bit 0 for `first`, bit 1 for `second`: set when the test is in the kept system.
     kept_tests: u32,
-    pad: u32,
+    // The slot of a second translating system the chain's plain rectangles are measured in, or
+    // NO_SPACE.
+    outer_space: u32,
+    // The intersection of those rectangles, in that system's coordinates.
+    outer_aabb: Bounds,
 }
 
 // What `Clip.space` holds when no link is kept in a coordinate system of its own.
@@ -224,10 +228,10 @@ fn load_paint(id: u32) -> Paint {
     );
 }
 
-/// One clip spans eleven texels: the device box, the two rounded tests at four each, the kept box,
-/// then the scalars. Each field is fetched where it is used, so a chain with no kept part never
+/// One clip spans twelve texels: the device box, the two rounded tests at four each, the kept box,
+/// the scalars, then the box of the second system. Each field is fetched where it is used, so a chain with no kept part never
 /// reads one — the discipline the storage path keeps, in a form a GL 3.3 context can run.
-const CLIP_TEXELS: u32 = 11u;
+const CLIP_TEXELS: u32 = 12u;
 
 fn clip_aabb(id: u32) -> Bounds {
     let t = texel_f32(textureLoad(clips, table_texel(id * CLIP_TEXELS + 0u), 0));
@@ -264,6 +268,15 @@ fn clip_space(id: u32) -> u32 {
 
 fn clip_kept_tests(id: u32) -> u32 {
     return textureLoad(clips, table_texel(id * CLIP_TEXELS + 10u), 0).z;
+}
+
+fn clip_outer_space(id: u32) -> u32 {
+    return textureLoad(clips, table_texel(id * CLIP_TEXELS + 10u), 0).w;
+}
+
+fn clip_outer_aabb(id: u32) -> Bounds {
+    let t = texel_f32(textureLoad(clips, table_texel(id * CLIP_TEXELS + 11u), 0));
+    return Bounds(t.x, t.y, t.z, t.w);
 }
 
 /// One gradient stop, which spans two texels.

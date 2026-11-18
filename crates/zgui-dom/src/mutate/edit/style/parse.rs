@@ -22,6 +22,10 @@ use style::stylesheets::{CssRuleType, UrlExtraData};
 ///
 /// Built by inference rather than by naming the URL library: the type is fixed by the field it
 /// goes into, so nothing here has to name a crate the ledger does not permit.
+///
+/// Parsed once per thread and shared: every declaration an element is given (each `style:`
+/// binding a view updates, a scroll thumb's position on every scroll tick) parsed the URL again
+/// and allocated a reference to it, two of a declaration's five allocations.
 fn base_url() -> UrlExtraData {
     fn parsed<T: FromStr>(text: &str) -> T
     where
@@ -29,7 +33,10 @@ fn base_url() -> UrlExtraData {
     {
         text.parse().expect("a well-formed base URL")
     }
-    UrlExtraData(ServoArc::new(parsed("zgui:///")))
+    thread_local! {
+        static BASE: UrlExtraData = UrlExtraData(ServoArc::new(parsed("zgui:///")));
+    }
+    BASE.with(Clone::clone)
 }
 
 /// Parses a whole `style` attribute's worth of declarations.

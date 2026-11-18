@@ -71,7 +71,21 @@ pub fn element(
     placed: Placed,
     place: &mut dyn Placer,
 ) -> Tier {
-    let tier = Tier::of(animation.properties);
+    let mut tier = Tier::of(animation.properties);
+    // An inherited colour is read by whatever below the element inherits it, so it cascades;
+    // only the window knows whether that is the element's text and nothing else, and then the
+    // override draws it.
+    if animation.properties.overrides_but_text_color() && place.colors_own_text_only(animation.node)
+    {
+        let rest = animation
+            .properties
+            .difference(zgui_style::AnimatedProperties::TEXT_COLOR);
+        tier = if rest.is_empty() {
+            Tier::Cheap
+        } else {
+            Tier::of(rest)
+        };
+    }
     match tier {
         Tier::Cheap => {
             let mut bits = Dirty::empty();

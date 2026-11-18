@@ -41,9 +41,41 @@ pub enum Refusal {
     /// The element does not generate a box, or generates no scrollable region.
     NotAScroller,
     /// Its background lets what is behind it through, so the composite is not the content's alone.
-    NotOpaque,
-    /// Something outside the container draws inside the port.
-    Overdrawn,
+    /// Carries the element that marks the port under the content, when one does.
+    NotOpaque(Option<NodeKey>),
+    /// Something outside the container draws inside the port. Carries the element that does.
+    Overdrawn(Option<NodeKey>),
+}
+
+/// A scrollport whose pixels may be moved, and what in it does not move with them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shiftable {
+    /// The port, in device pixels.
+    pub port: Rect<DevicePx, Device>,
+    /// What marks pixels in the port without scrolling: drawn over the content (an overlay
+    /// scrollbar) or between it and its backing (a glow along a panel's top). The caller may move
+    /// the part of the port clear of all of them and draw the rest again, or refuse.
+    pub apart: Vec<Apart>,
+}
+
+/// Something marking pixels in a port that does not scroll with it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Apart {
+    /// Its subtree's ink inside the port. The whole subtree's and not its marks', so that a part
+    /// of it that moves or resizes this frame stays inside.
+    pub ink: Rect<DevicePx, Device>,
+    /// The first element found marking a pixel there.
+    pub by: Option<NodeKey>,
+}
+
+impl Apart {
+    /// `key`'s subtree, found marking the port as `by`.
+    fn of(device: OnDevice<'_>, key: BoxKey, port: Pixels, by: Option<NodeKey>) -> Self {
+        let ink = subtree_ink(device, key)
+            .and_then(|ink| ink.intersection(port))
+            .unwrap_or(port);
+        Self { ink, by }
+    }
 }
 
 /// Whether `container`'s scrollport may have its pixels moved, and the port if it may.
@@ -55,7 +87,8 @@ pub fn port_may_be_shifted(
     store: &LayoutStore,
     container: NodeKey,
     placements: &zgui_scene::Placements,
-) -> Result<Rect<DevicePx, Device>, Refusal> {
+    scale: f32,
+) -> Result<Shiftable, Refusal> {
     let Some(&box_key) = store.boxes_of(container).first() else {
         return Err(Refusal::NotAScroller);
     };
@@ -74,15 +107,18 @@ pub fn port_may_be_shifted(
     // every border box the tests below read.
     let port =
         zgui_layout::fragment::transform::placed::onto_device(port, piece.transform, placements);
-    let device = OnDevice { store, placements };
+    let device = OnDevice {
+        store,
+        placements,
+        scale,
+    };
     // Two independent conditions, and neither implies the other. A port with an opaque background
     // of its own still cannot be moved if a dialog is drawn over it, and a port with nothing over
     // it still cannot be moved if what shows through it is a gradient.
-    if !only_this_box_draws_in(device, box_key, port) {
-        return Err(Refusal::Overdrawn);
-    }
-    backing(device, box_key, port)?;
-    Ok(port)
+    let mut apart = Vec::new();
+    drawn_over(device, box_key, port, &mut apart).map_err(|()| Refusal::Overdrawn(None))?;
+    backing(device, box_key, port, &mut apart)?;
+    Ok(Shiftable { port, apart })
 }
 
 /// The store, and the matrices that put its fragments on the device.
@@ -92,6 +128,8 @@ struct OnDevice<'a> {
     store: &'a LayoutStore,
     /// The matrices of the drawn frame.
     placements: &'a zgui_scene::Placements,
+    /// Device pixels per CSS pixel, which a corner radius is resolved with.
+    scale: f32,
 }
 
 /// Where the pixels `box_key` scrolls stand, in the space the container is laid out in.
@@ -121,28 +159,29 @@ fn scrollport_of(store: &LayoutStore, box_key: BoxKey) -> Option<Rect<DevicePx, 
 ///
 /// A later sibling whose whole folded subtree misses the port is dismissed without being entered,
 /// so the cost is the container's depth and the fan-out along it rather than the document.
-fn only_this_box_draws_in(device: OnDevice<'_>, box_key: BoxKey, port: Pixels) -> bool {
+///
+/// Adds what does to `apart`, and is `Err` when the walk lost its way.
+fn drawn_over(
+    device: OnDevice<'_>,
+    box_key: BoxKey,
+    port: Pixels,
+    apart: &mut Vec<Apart>,
+) -> Result<(), ()> {
     let store = device.store;
-    let Some(root) = store.root() else {
-        return false;
-    };
+    let root = store.root().ok_or(())?;
     let mut inside = box_key;
     while inside != root {
-        let Some(parent) = store.get(inside).and_then(|node| node.parent) else {
-            return false;
-        };
+        let parent = store.get(inside).and_then(|node| node.parent).ok_or(())?;
         let order = children_in_paint_order(store, parent);
-        let Some(position) = order.iter().position(|&child| child == inside) else {
-            return false;
-        };
+        let position = order.iter().position(|&child| child == inside).ok_or(())?;
         for &later in &order[position + 1..] {
-            if paints_in(device, later, port) {
-                return false;
+            if let Some(by) = paints_in(device, later, port) {
+                apart.push(Apart::of(device, later, port, by));
             }
         }
         inside = parent;
     }
-    true
+    Ok(())
 }
 
 /// Whether what the port is composited over is a uniform colour that nothing draws across.
@@ -160,7 +199,15 @@ fn only_this_box_draws_in(device: OnDevice<'_>, box_key: BoxKey, port: Pixels) -
 ///
 /// The walk is up the ancestors, and at every level it is the same three questions, so it costs the
 /// container's depth and the fan-out along it — never the document.
-fn backing(device: OnDevice<'_>, box_key: BoxKey, port: Pixels) -> Result<(), Refusal> {
+///
+/// Siblings that mark the port between the backing and the content are added to `apart` rather
+/// than refused: the part of the port clear of them is still the content over a flat colour.
+fn backing(
+    device: OnDevice<'_>,
+    box_key: BoxKey,
+    port: Pixels,
+    apart: &mut Vec<Apart>,
+) -> Result<(), Refusal> {
     let store = device.store;
     let Some(root) = store.root() else {
         return Err(Refusal::NotAScroller);
@@ -177,7 +224,7 @@ fn backing(device: OnDevice<'_>, box_key: BoxKey, port: Pixels) -> Result<(), Re
         let Some(parent) = store.get(inside).and_then(|node| node.parent) else {
             // Not under the root this frame, which is not a document anything should be moving
             // pixels for.
-            return Err(Refusal::Overdrawn);
+            return Err(Refusal::Overdrawn(None));
         };
 
         // Every sibling at this level that paints *before* the one leading down to the container.
@@ -186,8 +233,8 @@ fn backing(device: OnDevice<'_>, box_key: BoxKey, port: Pixels) -> Result<(), Re
         let order = children_in_paint_order(store, parent);
         let position = order.iter().position(|&child| child == inside);
         for &sibling in &order[..position.unwrap_or(0)] {
-            if paints_in(device, sibling, port) {
-                return Err(Refusal::Overdrawn);
+            if let Some(by) = paints_in(device, sibling, port) {
+                apart.push(Apart::of(device, sibling, port, by));
             }
         }
 
@@ -196,15 +243,19 @@ fn backing(device: OnDevice<'_>, box_key: BoxKey, port: Pixels) -> Result<(), Re
         if flat_and_opaque_over(device, parent, port) {
             return Ok(());
         }
+        // A flat colour that is not opaque, across the whole port, is a uniform layer: what it is
+        // composited over shows through it, but as long as that is uniform too, the composite is.
+        // A translucent panel (one a compositor blurs behind) is the ordinary case.
+        let layered = flat_over(device, parent, port);
         // Anything else it marks inside the port is between whatever backs it and the content.
-        if marks_pixels_in(device, parent, port) {
-            return Err(Refusal::NotOpaque);
+        if !layered && marks_pixels_in(device, parent, port) {
+            return Err(Refusal::NotOpaque(node_of(store, parent)));
         }
         if parent == root {
-            // Nothing at or below the root declared a colour for these pixels. What is actually
-            // behind them is whatever the surface was last cleared to, which is not this walk's to
-            // know.
-            return Err(Refusal::NotOpaque);
+            // Nothing at or below the root marked these pixels but flat layers. Behind them is what
+            // the renderer clears the window to, one colour across the surface, so the composite
+            // over it is uniform too.
+            return Ok(());
         }
         inside = parent;
     }
@@ -238,6 +289,145 @@ fn flat_and_opaque_over(device: OnDevice<'_>, key: BoxKey, port: Pixels) -> bool
         })
 }
 
+/// Whether `key` paints one flat colour, opaque or not, across the whole of `port`, and nothing
+/// else of its own there.
+///
+/// Its rounded corners stay clear of the port, so the colour is the same at every pixel the port
+/// holds; its border marks none of them; it has no shadow or outline.
+fn flat_over(device: OnDevice<'_>, key: BoxKey, port: Pixels) -> bool {
+    let store = device.store;
+    let Some(style) = store.get(key).map(|node| &node.style) else {
+        return false;
+    };
+    let background = style.get_background();
+    if background
+        .background_image
+        .0
+        .iter()
+        .any(|image| !matches!(image, ImageValue::None))
+    {
+        return false;
+    }
+    if crate::lower::outline::of(style, 1.0).is_some()
+        || !style.get_effects().box_shadow.0.is_empty()
+    {
+        return false;
+    }
+    let Some(piece) = store
+        .fragments_of_box(key)
+        .first()
+        .and_then(|frag| store.fragment(*frag))
+    else {
+        return false;
+    };
+    let on_device = |rect| {
+        zgui_layout::fragment::transform::placed::onto_device(
+            rect,
+            piece.transform,
+            device.placements,
+        )
+    };
+    let border_box = on_device(piece.border_box);
+    if border_box.intersection(port) != Some(port) {
+        return false;
+    }
+    let ring = !crate::lower::border::of(style).invisible;
+    let inner = if ring {
+        on_device(piece.padding_box())
+    } else {
+        border_box
+    };
+    inner.intersection(port) == Some(port) && clear_of_corners(device, style, piece, port)
+}
+
+/// Whether `port` stays out of the squares `piece`'s rounded corners cut from its border box,
+/// where neither the background nor the inside of the border is the same as along the sides.
+fn clear_of_corners(
+    device: OnDevice<'_>,
+    style: &ComputedStyle,
+    piece: &zgui_layout::Fragment,
+    port: Pixels,
+) -> bool {
+    let radii = zgui_layout::fragment::clip::radii(style, piece.border_box, device.scale);
+    let reach = [
+        radii.top_left,
+        radii.top_right,
+        radii.bottom_right,
+        radii.bottom_left,
+    ]
+    .iter()
+    .fold(0.0_f32, |held, corner| held.max(corner.x.0).max(corner.y.0));
+    if reach <= 0.0 {
+        return true;
+    }
+    let border_box = zgui_layout::fragment::transform::placed::onto_device(
+        piece.border_box,
+        piece.transform,
+        device.placements,
+    );
+    let (left, top) = (border_box.origin.x.0, border_box.origin.y.0);
+    let (right, bottom) = (
+        left + border_box.size.width.0,
+        top + border_box.size.height.0,
+    );
+    let square = |x: f32, y: f32| {
+        Rect::new(
+            zgui_geom::Point::new(DevicePx(x), DevicePx(y)),
+            Size::new(DevicePx(reach), DevicePx(reach)),
+        )
+    };
+    [
+        square(left, top),
+        square(right - reach, top),
+        square(left, bottom - reach),
+        square(right - reach, bottom - reach),
+    ]
+    .iter()
+    .all(|corner| corner.intersection(port).is_none())
+}
+
+/// Whether `piece`, a fragment of `key`, marks a pixel inside `port`.
+///
+/// Its ink is its whole extent, which for a box that paints only a border (a hairline ring around
+/// a panel) is a rectangle around pixels it never touches: such a box marks the port only where
+/// its border band, or a corner its radius rounds, reaches into it.
+fn marks_in(
+    device: OnDevice<'_>,
+    key: BoxKey,
+    piece: &zgui_layout::Fragment,
+    port: Pixels,
+) -> bool {
+    let store = device.store;
+    if piece
+        .device_ink(device.placements)
+        .intersection(port)
+        .is_none()
+        || !marks_pixels(store, key, piece.kind)
+    {
+        return false;
+    }
+    if !matches!(piece.kind, FragmentKind::Box) {
+        return true;
+    }
+    let Some(style) = store.get(key).map(|node| &node.style) else {
+        return true;
+    };
+    let background = crate::lower::background::of(style);
+    let only_a_border = background.color.alpha() <= 0.0
+        && background.layers.is_empty()
+        && crate::lower::outline::of(style, 1.0).is_none()
+        && style.get_effects().box_shadow.0.is_empty();
+    if !only_a_border {
+        return true;
+    }
+    let inner = zgui_layout::fragment::transform::placed::onto_device(
+        piece.padding_box(),
+        piece.transform,
+        device.placements,
+    );
+    !(inner.intersection(port) == Some(port) && clear_of_corners(device, style, piece, port))
+}
+
 /// Whether a box's own background hides everything behind it, with one flat colour.
 ///
 /// A solid, fully opaque colour is the one case where moving a composite is exactly moving the
@@ -267,13 +457,9 @@ fn paints_opaquely(style: &ComputedStyle) -> bool {
 fn marks_pixels_in(device: OnDevice<'_>, key: BoxKey, port: Pixels) -> bool {
     let store = device.store;
     store.fragments_of_box(key).iter().any(|&frag| {
-        store.fragment(frag).is_some_and(|piece| {
-            piece
-                .device_ink(device.placements)
-                .intersection(port)
-                .is_some()
-                && marks_pixels(store, key, piece.kind)
-        })
+        store
+            .fragment(frag)
+            .is_some_and(|piece| marks_in(device, key, piece, port))
     })
 }
 
@@ -283,35 +469,30 @@ fn marks_pixels_in(device: OnDevice<'_>, key: BoxKey, port: Pixels) -> bool {
 /// straddle the port but whose painted boxes all avoid it marks nothing there, and taking the union
 /// as the answer refuses every document with a full-height sibling in it. So the union is used the
 /// way the emit walk uses it — to dismiss a whole subtree in constant time — and the question is
-/// then asked of each box's own ink.
-fn paints_in(device: OnDevice<'_>, key: BoxKey, port: Pixels) -> bool {
+/// then asked of each box's own ink. Answers with the element of the first box that does.
+fn paints_in(device: OnDevice<'_>, key: BoxKey, port: Pixels) -> Option<Option<NodeKey>> {
     let store = device.store;
-    let Some(folded) = subtree_ink(device, key) else {
-        return false;
-    };
-    if folded.intersection(port).is_none() {
-        return false;
-    }
+    let folded = subtree_ink(device, key)?;
+    folded.intersection(port)?;
     for &frag in store.fragments_of_box(key) {
         let Some(piece) = store.fragment(frag) else {
             continue;
         };
-        if piece
-            .device_ink(device.placements)
-            .intersection(port)
-            .is_none()
-        {
-            continue;
-        }
-        if marks_pixels(store, key, piece.kind) {
-            return true;
+        if marks_in(device, key, piece, port) {
+            return Some(piece.node);
         }
     }
-    store.get(key).is_some_and(|node| {
-        node.children
-            .iter()
-            .any(|&child| paints_in(device, child, port))
-    })
+    store
+        .get(key)?
+        .children
+        .iter()
+        .find_map(|&child| paints_in(device, child, port))
+}
+
+/// The element `key` is a box of, for a refusal to name.
+fn node_of(store: &LayoutStore, key: BoxKey) -> Option<NodeKey> {
+    let frag = *store.fragments_of_box(key).first()?;
+    store.fragment(frag)?.node
 }
 
 /// Whether a fragment of this box actually marks a pixel, rather than merely occupying a rectangle.

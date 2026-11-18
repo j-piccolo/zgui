@@ -193,7 +193,12 @@ fn a_fragment_under_a_changed_folded_alpha_is_encoded_again() {
         alpha: 0.5f32.to_bits(),
         ..painted(0)
     };
-    assert_eq!(cache.reuse(&scene, &same, dimmed, None), Reuse::Encode);
+    // A chunk whose colours are all inline replays with them scaled to the new alpha; any other
+    // encodes again.
+    assert_eq!(
+        cache.reuse(&scene, &same, dimmed, None),
+        Reuse::Faded(Size::new(DevicePx(0.0), DevicePx(0.0)), 0.5)
+    );
     // And the same alpha still replays, or every fragment of every document is encoded twice.
     assert_ne!(cache.reuse(&scene, &same, painted(0), None), Reuse::Encode);
 }

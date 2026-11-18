@@ -24,10 +24,14 @@
 //! per-element trace is the document's size rather than a constant, and a bounded ring given one
 //! loses every frame boundary it was kept for.
 
+mod counts;
 mod elements;
 pub mod ring;
 mod sink;
 
+pub use crate::latency::counts::note_counters;
 pub use crate::latency::elements::{trace_elements, tracing_elements};
 pub use crate::latency::ring::{Recorded, clear, last, recent, retain, retain_marks, retaining};
-pub use crate::latency::sink::{flush, mark, mark_at, marker, note, note_with, start_epoch};
+pub use crate::latency::sink::{
+    flush, listening, mark, mark_at, marker, note, note_with, start_epoch,
+};

@@ -19,7 +19,7 @@ use zgui_scene::Content;
 
 use crate::fragment::diff::damage::{overlaps, pairwise_disjoint};
 use crate::fragment::diff::dirty::FrameDirty;
-use crate::fragment::diff::{Folded, Pass};
+use crate::fragment::diff::{Folded, Pass, draws_unseen_shapes, paints_nothing_itself};
 use crate::fragment::{FragKey, FragmentFlags, transform};
 
 /// Whether `matrix` keeps every rectangle upright and the right way round.
@@ -46,27 +46,18 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
         outer: Option<Matrix4>,
         fixed: Option<Matrix4>,
     ) -> Folded {
-        let before = self
-            .store
-            .fragments_of_box(key)
-            .first()
-            .and_then(|frag| self.store.fragment(*frag))
-            .map(|fragment| (fragment.subtree_ink, fragment.anchor));
-        let folded = self.rematrix_box(key, outer, fixed);
-        // A box with no piece of its own still raises where its subtree is now, in the root space.
-        let anchor = before.map_or(self.anchors.root, |(_, anchor)| anchor);
+        let mut drawn = Drawn::default();
+        let folded = self.rematrix_box(key, outer, fixed, &mut drawn);
+        // Each piece cut to its own clip chain, where it was and where it is now: a subtree's ink
+        // is unclipped, and a slid panel holding a long list would damage the whole list.
         // Beyond the move's own damage: a frame that moves a port's pixels keeps this damage and
         // drops that.
-        if let Some((before, _)) = before {
-            self.damage_drawn_beyond_a_move(
-                self.device_before(before, anchor),
-                super::Admitted::everything(),
-            );
+        if let Some(before) = drawn.before {
+            self.damage_drawn_beyond_a_move(before, super::Admitted::everything());
         }
-        self.damage_beyond_a_move(
-            self.device_now(folded.subtree_ink, anchor),
-            super::Admitted::everything(),
-        );
+        if let Some(now) = drawn.now {
+            self.damage_beyond_a_move(now, super::Admitted::everything());
+        }
         folded
     }
 
@@ -76,6 +67,7 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
         key: BoxKey,
         outer: Option<Matrix4>,
         fixed: Option<Matrix4>,
+        drawn: &mut Drawn,
     ) -> Folded {
         counter::bump(Counter::NodesVisited);
         counter::bump(Counter::FragmentBoxesVisited);
@@ -123,6 +115,10 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
         // The box's own piece is its ink; every later piece is a piece of the subtree, exactly as
         // the composing walk folds them.
         let mut ink = Rect::ZERO;
+        // What the box itself paints, for the overlap test: nothing for a box that paints
+        // nothing, as the composing walk measures it.
+        let mut own_paint = Rect::ZERO;
+        let mut draws_unseen = false;
         let mut inks: Vec<Rect<DevicePx, Device>> = Vec::new();
         let count = self.store.fragments_of_box(key).len();
         for position in 0..count {
@@ -132,17 +128,32 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
             let Some(fragment) = self.store.fragment_mut(frag) else {
                 continue;
             };
+            let was = fragment.ink;
             // Every piece is drawn through the box's matrix: its own, its lines and its bars.
             fragment.ink = match matrix {
                 Some(matrix) => transform::transformed_bounds(&matrix, fragment.local_ink),
                 None => fragment.local_ink,
             };
+            let paints = !paints_nothing_itself(fragment.kind, fragment.flags);
+            let (is, anchor, clip) = (fragment.ink, fragment.anchor, fragment.clip);
+            draws_unseen |= draws_unseen_shapes(fragment.kind);
             if position == 0 {
                 ink = fragment.ink;
+                if paints {
+                    own_paint = fragment.ink;
+                }
             } else {
                 inks.push(fragment.ink);
             }
             self.store.set_transform_hash(frag, hash);
+            if paints {
+                let before = self
+                    .device_before(was, anchor)
+                    .intersection(self.admits_before(clip));
+                let now = self.device_now(is, anchor).intersection(self.admits(clip));
+                drawn.before = union(drawn.before, before);
+                drawn.now = union(drawn.now, now);
+            }
         }
 
         // A scroll container that draws its children in a content space hands them that space,
@@ -169,7 +180,7 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
         let mut disjoint = true;
         let mut position = 0;
         while let Some(&child) = self.store.node(key).children.get(position) {
-            let mut below = self.rematrix_box(child, below_matrix, below_fixed);
+            let mut below = self.rematrix_box(child, below_matrix, below_fixed, drawn);
             match (below.anchor, own_anchor) {
                 // A fixed box inside a content space measures its ink where it hangs from.
                 (Some(anchor), Some(own)) if Some(anchor) != children_anchor => {
@@ -195,7 +206,7 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
             }
             position += 1;
         }
-        disjoint &= !inks.iter().any(|piece| overlaps(ink, *piece));
+        disjoint &= !inks.iter().any(|piece| overlaps(own_paint, *piece));
         disjoint &= pairwise_disjoint(&inks);
         let subtree_ink = inks.iter().fold(ink, |held, piece| held.union(*piece));
 
@@ -210,7 +221,8 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
             }
         }
         folded.subtree_ink = subtree_ink;
-        folded.disjoint = disjoint;
+        // The box's own answer is stored; its parent hears that a drawing is not disjoint.
+        folded.disjoint = disjoint && !draws_unseen;
         folded
     }
 
@@ -224,5 +236,25 @@ impl<D: FrameDirty> Pass<'_, '_, D> {
         let spatial = &*self.tables.spatial;
         let id = spatial.of(zgui_scene::PropertyOwner::of(key).content())?;
         spatial.get(id).map(|node| node.local)
+    }
+}
+
+/// The device pixels a carried subtree's pieces drew in, each cut to its clip chain.
+#[derive(Default)]
+struct Drawn {
+    /// Where they were drawn last frame.
+    before: Option<Rect<DevicePx, Device>>,
+    /// Where they are drawn now.
+    now: Option<Rect<DevicePx, Device>>,
+}
+
+/// `held` grown to cover `rect`, when there is a `rect`.
+fn union(
+    held: Option<Rect<DevicePx, Device>>,
+    rect: Option<Rect<DevicePx, Device>>,
+) -> Option<Rect<DevicePx, Device>> {
+    match (held, rect) {
+        (Some(held), Some(rect)) => Some(held.union(rect)),
+        (held, rect) => held.or(rect),
     }
 }

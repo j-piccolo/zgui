@@ -56,11 +56,17 @@ pub enum PipelineKind {
     MarksGlyphCoverage,
     /// Painting a union mark through the coverage in its bin.
     MarksComposite,
+    /// A quad batch with no dashed or dotted border in the frame: the quad shader without the dash
+    /// code, which is what lets Intel's compiler run it sixteen pixels wide instead of eight.
+    QuadSolid,
+    /// The quad a damage rectangle starts at, written without a blend over what the clear would
+    /// have left. Inside the rectangle it paints only its fill, so it needs no dashes either.
+    QuadReplace,
 }
 
 impl PipelineKind {
     /// Every kind.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 25] = [
         Self::Quad,
         Self::Shadow,
         Self::Decoration,
@@ -84,6 +90,8 @@ impl PipelineKind {
         Self::MarksGlyph,
         Self::MarksGlyphCoverage,
         Self::MarksComposite,
+        Self::QuadSolid,
+        Self::QuadReplace,
     ];
 
     /// The format a coverage draw writes: the bin pages, one quarter of a pixel in each channel.
@@ -107,7 +115,7 @@ impl PipelineKind {
     /// Which shader module it is built from.
     pub fn module(self) -> Module {
         match self {
-            Self::Quad => Module::Quad,
+            Self::Quad | Self::QuadSolid | Self::QuadReplace => Module::Quad,
             Self::Shadow => Module::Shadow,
             Self::Decoration => Module::Decoration,
             Self::MonoSprite => Module::MonoSprite,
@@ -137,6 +145,8 @@ impl PipelineKind {
         matches!(
             self,
             Self::Quad
+                | Self::QuadSolid
+                | Self::QuadReplace
                 | Self::Shadow
                 | Self::Decoration
                 | Self::MonoSprite
@@ -148,7 +158,7 @@ impl PipelineKind {
     /// Its vertex entry point.
     pub fn vertex_entry(self) -> &'static str {
         match self {
-            Self::Quad => "vs_quad",
+            Self::Quad | Self::QuadSolid | Self::QuadReplace => "vs_quad",
             Self::Shadow => "vs_shadow",
             Self::Decoration => "vs_decoration",
             Self::MonoSprite => "vs_mono_sprite",
@@ -176,6 +186,7 @@ impl PipelineKind {
     pub fn fragment_entry(self) -> &'static str {
         match self {
             Self::Quad => "fs_quad",
+            Self::QuadSolid | Self::QuadReplace => "fs_quad_solid",
             Self::Shadow => "fs_shadow",
             Self::Decoration => "fs_decoration",
             Self::MonoSprite => "fs_mono_sprite",
@@ -218,6 +229,8 @@ impl PipelineKind {
         matches!(
             self,
             Self::Quad
+                | Self::QuadSolid
+                | Self::QuadReplace
                 | Self::Shadow
                 | Self::Decoration
                 | Self::MonoSprite
@@ -318,7 +331,8 @@ impl PipelineKind {
             | Self::BlitUndoSrgb
             | Self::DamageClear
             | Self::BlurDownsample
-            | Self::BlurAxis => None,
+            | Self::BlurAxis
+            | Self::QuadReplace => None,
             // Fill coverage adds up, and the format saturates the sum at one: the union of the
             // prims, exact where two fills abut.
             Self::MarksDiscCoverage | Self::MarksBoxCoverage | Self::MarksGlyphCoverage => {
@@ -370,6 +384,8 @@ impl PipelineKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Quad => "zgui.pipeline.quad",
+            Self::QuadSolid => "zgui.pipeline.quad_solid",
+            Self::QuadReplace => "zgui.pipeline.quad_replace",
             Self::Shadow => "zgui.pipeline.shadow",
             Self::Decoration => "zgui.pipeline.decoration",
             Self::MonoSprite => "zgui.pipeline.mono_sprite",
@@ -427,6 +443,7 @@ mod tests {
             PipelineKind::DamageClear,
             PipelineKind::BlurDownsample,
             PipelineKind::BlurAxis,
+            PipelineKind::QuadReplace,
         ];
         for kind in PipelineKind::ALL {
             assert_eq!(
@@ -535,6 +552,8 @@ mod tests {
         fn place(kind: PipelineKind) -> usize {
             match kind {
                 PipelineKind::Quad => 0,
+                PipelineKind::QuadSolid => 23,
+                PipelineKind::QuadReplace => 24,
                 PipelineKind::Shadow => 1,
                 PipelineKind::Decoration => 2,
                 PipelineKind::MonoSprite => 3,
@@ -564,7 +583,7 @@ mod tests {
             assert_eq!(place(kind), index, "{kind:?}");
         }
         assert_eq!(
-            place(PipelineKind::MarksComposite) + 1,
+            place(PipelineKind::QuadReplace) + 1,
             PipelineKind::ALL.len()
         );
     }

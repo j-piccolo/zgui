@@ -71,6 +71,22 @@ impl Edit<'_> {
         self.write_declaration(node, property, value).is_some()
     }
 
+    /// Sets one inline declaration as [`Edit::set_style_property`] does, and says what came of it:
+    /// `None` when it did not land, `Some(false)` when the block already said that (no style work
+    /// follows), `Some(true)` when it changed the block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `node` names no live node of the document.
+    pub fn write_style_property(
+        &mut self,
+        node: NodeIndex,
+        property: &str,
+        value: Option<&str>,
+    ) -> Option<bool> {
+        self.write_declaration(node, property, value)
+    }
+
     /// Writes one declaration, reporting whether it landed and whether it changed anything.
     ///
     /// `None` is "there is no such declaration to make"; `Some(false)` is "the block already said
