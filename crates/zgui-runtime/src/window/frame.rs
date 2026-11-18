@@ -1410,6 +1410,7 @@ impl Window {
         // with nothing in it. Skipped entirely when no pass ran, because then no extent moved.
         if relaid_out {
             self.clamp_scroll_to_content();
+            self.images.layout_changed();
         }
         // After the clamp, so a scroll is measured against the extents this pass produced, and
         // before the fragment pass, which composes what it moves.
