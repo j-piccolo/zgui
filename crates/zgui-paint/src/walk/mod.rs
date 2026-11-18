@@ -326,6 +326,7 @@ struct WalkScratch {
     outlines: Vec<Option<(FragKey, PaintStyleRef, Option<OwnedPaints>)>>,
     decorations: Decorations,
     text_fills: TextFills,
+    text_colors: Vec<Option<(zgui_color::Color, zgui_css::values::color::AbsoluteColor)>>,
     named: Vec<AtlasKey>,
     shapes: rustc_hash::FxHashMap<zgui_scene::SpatialId, u64>,
     spaces: rustc_hash::FxHashMap<zgui_scene::SpatialId, Option<zgui_geom::Affine2>>,
@@ -341,6 +342,7 @@ impl WalkScratch {
         self.outlines.clear();
         self.decorations.clear();
         self.text_fills.clear();
+        self.text_colors.clear();
         self.named.clear();
         self.shapes.clear();
         self.spaces.clear();
@@ -409,6 +411,7 @@ impl Painter {
             outlines: scratch.outlines,
             decorations: scratch.decorations,
             text_fills: scratch.text_fills,
+            text_colors: scratch.text_colors,
             named: scratch.named,
             shapes: scratch.shapes,
             spaces: scratch.spaces,
@@ -423,6 +426,7 @@ impl Painter {
             outlines,
             decorations,
             text_fills,
+            text_colors,
             named,
             shapes,
             spaces,
@@ -436,6 +440,7 @@ impl Painter {
             outlines,
             decorations,
             text_fills,
+            text_colors,
             named,
             shapes,
             spaces,
@@ -563,6 +568,10 @@ struct Pass<'a, 'b> {
     decorations: Decorations,
     /// The ramps contributed by the boxes still on the walk, for the text inside them.
     text_fills: TextFills,
+    /// The animated `color` in force over each entered box, innermost last: set by the element an
+    /// animation drives it on, carried through the anonymous boxes its lines hang from, and stopped
+    /// by any other element.
+    text_colors: Vec<Option<(zgui_color::Color, zgui_css::values::color::AbsoluteColor)>>,
     /// The rasters the fragment currently being encoded has named, reused between fragments.
     named: Vec<AtlasKey>,
     /// The fingerprint of what each coordinate system does to shapes, by name, for this frame.
@@ -684,6 +693,12 @@ impl Pass<'_, '_> {
     ///
     /// An anonymous box has no element and therefore no animation of its own; it inherits the
     /// composited alpha of the box above it exactly as it inherits everything else.
+    /// The animated text colour in force, with the folded alpha in it as the style's colour has.
+    fn text_color(&self) -> Option<zgui_color::Color> {
+        let (color, _) = self.text_colors.last().cloned().flatten()?;
+        Some(color.with_alpha(color.alpha() * self.alpha()))
+    }
+
     fn anim_of(&self, store: &LayoutStore, key: BoxKey) -> Option<&AnimOverride> {
         self.input.anim.get(store.get(key)?.source?)
     }
@@ -792,6 +807,7 @@ impl Pass<'_, '_> {
             alpha: self.alpha(),
             decorations,
             text_fill,
+            text_color: self.text_color(),
             inline,
             nested_inline: fragment.kind == FragmentKind::Box && node.is_nested_inline(),
             glyphs: self.input.glyphs,
@@ -1044,7 +1060,10 @@ impl Pass<'_, '_> {
             cut: store.fragment_extra(fragment).content_hash,
             scale: self.input.scale.to_bits(),
             decorations: decorate::signature(&decorations),
-            text_fill: fill::signature(text_fill.as_ref()),
+            text_fill: fill::signature(text_fill.as_ref())
+                ^ self
+                    .text_color()
+                    .map_or(0, |color| fill::color_signature(&color)),
             anim,
             alpha: self.alpha().to_bits(),
             subpixel: crate::emit::text::keeps_subpixel(
@@ -1272,6 +1291,24 @@ impl stacking::Visitor for Pass<'_, '_> {
         // animating, and every other box borrows: a `PaintStyle` is several hundred bytes with two
         // inline vectors and a path in it, and at most one box on a screen is being hovered.
         let over = self.anim_of(store, key);
+        // An element computing its parent's colour inherited it, and follows the animation; one
+        // computing another set its own.
+        let text_color = store.get(key).and_then(|node| {
+            let computed = node.style.get_inherited_text().color;
+            match (node.source, over.and_then(|over| over.color.as_ref())) {
+                (Some(_), Some(color)) => {
+                    Some((zgui_css::values::color::to_color(color), computed))
+                }
+                (Some(_), None) => self
+                    .text_colors
+                    .last()
+                    .cloned()
+                    .flatten()
+                    .filter(|(_, parent)| *parent == computed)
+                    .map(|(color, _)| (color, computed)),
+                (None, _) => self.text_colors.last().cloned().flatten(),
+            }
+        });
         let style = match over {
             Some(over) => {
                 let mut composed = entry.clone();
@@ -1369,6 +1406,7 @@ impl stacking::Visitor for Pass<'_, '_> {
         // The same propagation, for the same reason: the ramp that paints a heading's letters is
         // declared on the heading and the line boxes belong to an anonymous box under it.
         self.text_fills.enter(&node.style, style.text_fill.as_ref());
+        self.text_colors.push(text_color);
 
         for &frag in store.fragments_of_box(key) {
             self.paint(frag, style_ref, anim, owned);
@@ -1400,6 +1438,7 @@ impl stacking::Visitor for Pass<'_, '_> {
         self.opaque.pop();
         self.decorations.leave();
         self.text_fills.leave();
+        self.text_colors.pop();
         if self.open.last().is_some_and(|(opener, _)| *opener == key) {
             let (_, boundary) = self.open.pop().expect("just checked");
             group::close(self.scene, &boundary);

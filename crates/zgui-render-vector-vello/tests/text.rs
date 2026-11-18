@@ -199,8 +199,10 @@ fn scene_of(text: &str, drawn: Drawn) -> Scene {
             // that walk's answer, handed in directly.
             zgui_paint::emit::text::Inherited {
                 text_fill: lowered.text_fill.as_ref(),
+                text_color: None,
                 decorations: &[],
                 inline: &[],
+                alpha: 1.0,
             },
             TextPlacement {
                 line: Rect::new(

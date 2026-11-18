@@ -102,6 +102,10 @@ impl Placer for Writing<'_> {
     fn uncolored(&mut self, node: NodeKey, was: &AnimOverride) {
         self.damage_uncolored(node, was);
     }
+
+    fn colors_own_text_only(&self, node: NodeKey) -> bool {
+        self.own_text_only(node)
+    }
 }
 
 impl Writing<'_> {
