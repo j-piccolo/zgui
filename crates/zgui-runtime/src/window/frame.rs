@@ -526,7 +526,15 @@ impl Window {
         // appeared or went wrote the hit index, and a frame that wrote nothing there leaves the
         // pointer over exactly what it was over.
         mark("f.rehit");
-        if self.hit.generation() != self.rehit_seen {
+        // Hover holds while a container scrolls, as in a browser. Content that moves under a
+        // still pointer would otherwise hover every element it passes, and each hover is a
+        // restyle and a transition. The retest runs on the first frame after the scroll stops: an
+        // animating scroll asks for its own frames, and a settled one asks for one more here.
+        if !self.scrolled_this_frame.is_empty() || self.is_scrolling() {
+            if self.hit.generation() != self.rehit_seen && !self.is_scrolling() {
+                self.request_frame();
+            }
+        } else if self.hit.generation() != self.rehit_seen {
             self.rehit_seen = self.hit.generation();
             counter::bump(Counter::HitRetests);
             self.rehit();
