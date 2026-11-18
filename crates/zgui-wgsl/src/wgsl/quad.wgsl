@@ -87,10 +87,44 @@ fn vs_quad(
     @location(1) shift: vec2<f32>,
 ) -> QuadVarying {
     let quad = load_quad(slot);
-    let local = inflated_corner(vertex, quad.bounds) + shift;
+    // Drawn as a ring, as a shadow is: a strip of ten vertices between the outer quad and an
+    // inner one. A box with no fill draws nothing inside its border, and the fragment stage drops
+    // those pixels, but a dropped pixel still costs its rasterisation: a panel's rim is a quad
+    // the size of the panel. So for an unfilled box the inner quad is the box inset by its widest
+    // border or corner, plus two pixels for the antialiased edge under a scale. A filled box, or
+    // one with no inside left, has a point there, and the ring covers the whole quad.
+    let outer_origin = bounds_origin(quad.bounds) - vec2<f32>(1.0);
+    let outer_size = bounds_size(quad.bounds) + vec2<f32>(2.0);
+    let around = (vertex >> 1u) % 4u;
+    // Clockwise from the top left, so consecutive pairs sweep the ring.
+    let unit = vec2<f32>(
+        select(0.0, 1.0, around == 1u || around == 2u),
+        select(0.0, 1.0, around >= 2u),
+    );
+    var point = outer_origin + unit * outer_size;
+    if (vertex & 1u) == 1u {
+        let r = quad.radii;
+        let b = quad.border;
+        let near = vec2<f32>(
+            max(b.left, max(r.tl_x, r.bl_x)),
+            max(b.top, max(r.tl_y, r.tr_y)),
+        ) + vec2<f32>(2.0);
+        let far = vec2<f32>(
+            max(b.right, max(r.tr_x, r.br_x)),
+            max(b.bottom, max(r.br_y, r.bl_y)),
+        ) + vec2<f32>(2.0);
+        let lo = bounds_origin(quad.bounds) + near;
+        let hi = bounds_origin(quad.bounds) + bounds_size(quad.bounds) - far;
+        if quad.fill.kind == PAINT_NONE && all(hi > lo) {
+            point = lo + unit * (hi - lo);
+        } else {
+            point = outer_origin + outer_size * 0.5;
+        }
+    }
+    let local = point + shift;
     var out: QuadVarying;
     out.position = to_clip_position(local, quad.transform);
-    out.local = inflated_offset(vertex, quad.bounds);
+    out.local = point - bounds_origin(quad.bounds);
     out.origin = bounds_origin(quad.bounds);
     out.v_bounds = bounds_of(quad.bounds);
     out.v_radii_lo = radii_lo(quad.radii);
@@ -126,6 +160,25 @@ fn fs_quad(in: QuadVarying) -> @location(0) vec4<f32> {
         in.v_origin_shape.z,
         Vector2(in.v_origin_shape.x, in.v_origin_shape.y),
     );
+    // A box with no fill draws nothing inside its border: a panel's rim, a card's stroke. The ring
+    // leaves most of that inside out; what it keeps is dropped here, on the geometry alone, before
+    // the clip and the paints are read. Only the straight inside is: near a rounded corner the
+    // inner edge curves, and the full test below decides.
+    if quad.fill.kind == PAINT_NONE {
+        let half = bounds_size(quad.bounds) * 0.5;
+        let from_center = in.local - half;
+        let from_corner = abs(from_center) - half;
+        let radii = pick_corner_radii(from_center, quad.radii);
+        let sides = vec2<f32>(
+            select(quad.border.right, quad.border.left, from_center.x < 0.0),
+            select(quad.border.bottom, quad.border.top, from_center.y < 0.0),
+        );
+        let inside = from_corner + sides;
+        let in_corner = from_corner.x + radii.x >= 0.0 && from_corner.y + radii.y >= 0.0;
+        if max(inside.x, inside.y) < -0.5 * unit && !in_corner {
+            discard;
+        }
+    }
     // The clip is in device space, so it is evaluated at the real pixel; the shape is in the
     // primitive's own space, so it is evaluated at the point that maps to this pixel. The box and
     // the count of rounded tests came across from the vertex stage, so an unclipped rectangle

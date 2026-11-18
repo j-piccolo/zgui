@@ -543,9 +543,9 @@ impl<'frame> Recorder<'frame> {
         let order = &buffers.orders[lane];
         let stride = core::mem::size_of::<crate::buffer::persist::OrderEntry>() as u64;
         pass.set_vertex_buffer(0, order.slice_from(range.start as u64 * stride));
-        // A shadow is a ring of ten strip vertices around the core of its box. Other kinds are
-        // quads.
-        let vertices = if matches!(kind, PipelineKind::Shadow) {
+        // A shadow is a ring of ten strip vertices around the core of its box, and so is a quad,
+        // around the inside of an unfilled one. Other kinds are quads.
+        let vertices = if matches!(kind, PipelineKind::Shadow | PipelineKind::Quad) {
             0..10
         } else {
             0..4
