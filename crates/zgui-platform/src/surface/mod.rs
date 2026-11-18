@@ -341,6 +341,15 @@ pub trait Surface: Send + Sync + 'static {
         let _ = region;
     }
 
+    /// Asks the desktop to blur what is behind part of the surface, in CSS pixels.
+    ///
+    /// For a translucent surface: a bar or a panel of glass. `None` and an empty set of rectangles
+    /// both take the blur off. A platform rounds each edge outwards. The change is shown with the
+    /// next frame. Where the desktop has no such effect it costs nothing.
+    fn set_blur_region(&self, region: Option<&[Rect<CssPx, Css>]>) {
+        let _ = region;
+    }
+
     /// Tells the platform where text is being typed and what kind, or that none is.
     ///
     /// One call rather than three, because the parts are only meaningful together: an input method

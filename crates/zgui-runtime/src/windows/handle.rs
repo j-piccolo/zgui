@@ -87,6 +87,8 @@ pub(crate) struct WindowShared {
     pub(crate) input_region: RefCell<Option<Region>>,
     /// The last opaque region the application gave, if it gave one.
     pub(crate) opaque_region: RefCell<Option<Region>>,
+    /// The last blur region the application gave, if it gave one.
+    pub(crate) blur_region: RefCell<Option<Region>>,
 }
 
 /// A region in CSS pixels, or `None` for the whole window.
@@ -122,6 +124,7 @@ impl WindowHandle {
                 lock_keys: ArcRwSignal::new(Modifiers::NONE),
                 input_region: RefCell::new(None),
                 opaque_region: RefCell::new(None),
+                blur_region: RefCell::new(None),
             }),
         }
     }
@@ -146,6 +149,9 @@ impl WindowHandle {
         }
         if let Some(region) = self.shared.opaque_region.borrow().as_ref() {
             surface.set_opaque_region(region.as_deref());
+        }
+        if let Some(region) = self.shared.blur_region.borrow().as_ref() {
+            surface.set_blur_region(region.as_deref());
         }
     }
 
@@ -514,6 +520,19 @@ impl WindowHandle {
         }
         self.act(|surface| surface.set_opaque_region(region.as_deref()));
         *self.shared.opaque_region.borrow_mut() = Some(region);
+    }
+
+    /// Asks the desktop to blur what is behind part of the window, in CSS pixels.
+    ///
+    /// For a translucent window. `None` takes the blur off. The change reaches the screen with the
+    /// next frame, and does nothing on a desktop without the effect. A region set before the
+    /// window has a surface reaches the surface when the window opens.
+    pub fn set_blur_region(&self, region: Option<Vec<Rect<CssPx, Css>>>) {
+        if self.shared.closed.get() {
+            return;
+        }
+        self.act(|surface| surface.set_blur_region(region.as_deref()));
+        *self.shared.blur_region.borrow_mut() = Some(region);
     }
 
     /// Sets the picture the desktop shows for this window.

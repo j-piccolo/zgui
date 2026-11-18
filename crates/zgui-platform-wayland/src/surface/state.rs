@@ -193,6 +193,8 @@ pub(crate) struct Shared {
     pub(crate) input_owed: crate::surface::region::Owed,
     /// The part of the surface that is opaque, as asked for and not yet sent.
     pub(crate) opaque_owed: crate::surface::region::Owed,
+    /// The part of the surface the compositor blurs what is behind, as asked for and not yet sent.
+    pub(crate) blur_owed: crate::surface::region::Owed,
 }
 
 impl Shared {
@@ -241,6 +243,7 @@ impl Shared {
             layer_owed: false,
             input_owed: None,
             opaque_owed: None,
+            blur_owed: None,
         }
     }
 
@@ -391,6 +394,7 @@ impl Shared {
         self.layer_owed
             || self.input_owed.is_some()
             || self.opaque_owed.is_some()
+            || self.blur_owed.is_some()
             || self.exact_owed
     }
 
