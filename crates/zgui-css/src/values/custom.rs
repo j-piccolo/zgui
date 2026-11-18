@@ -225,7 +225,12 @@ pub(crate) fn url_data() -> style::stylesheets::UrlExtraData {
     {
         text.parse().expect("a well-formed base URL")
     }
-    style::stylesheets::UrlExtraData(servo_arc::Arc::new(parsed("zgui:///")))
+    // Parsed once per thread, as the inline style parser's base is.
+    thread_local! {
+        static BASE: style::stylesheets::UrlExtraData =
+            style::stylesheets::UrlExtraData(servo_arc::Arc::new(parsed("zgui:///")));
+    }
+    BASE.with(Clone::clone)
 }
 
 #[cfg(test)]
