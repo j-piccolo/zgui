@@ -81,6 +81,7 @@ impl Window {
         let discrete = phase == ScrollPhase::Discrete;
         let travels = discrete && settings.wheel.framework_animates();
         let stretch = self.stretch_for(phase);
+        let throws = settings.coast.framework_throws();
         let at = at.since_origin();
         let (touched, returning) = {
             let layout = self.layout.borrow();
@@ -101,7 +102,10 @@ impl Window {
                 }
                 ScrollPhase::Ended if scroller.is_touching() => {
                     let touched = scroller.drag_by(&layout, &chain, moved_by, at, stretch);
-                    (touched, !scroller.lift().is_empty())
+                    let returning = !scroller.lift().is_empty();
+                    // No momentum follows the lift here, so the content is thrown from it.
+                    let thrown = throws && scroller.throw(&layout, at, stretch);
+                    (touched, returning || thrown)
                 }
                 _ => {
                     let returning = discrete && !scroller.forget_gesture().is_empty();
@@ -116,7 +120,8 @@ impl Window {
         };
         // A glide's own movement is reported by the frames that carry it, but the frame it was
         // asked in still has to be one of them, or the wheel does nothing until something else
-        // happens to wake the loop. An edge that was let go also needs frames to return.
+        // happens to wake the loop. An edge that was let go needs frames to return, and content
+        // thrown at a lift needs frames to travel.
         self.mark_scrolled(&touched);
         if travels || returning {
             self.request_scroll_frame();
@@ -137,8 +142,18 @@ impl Window {
     ) {
         let latched = self.scroll.borrow().latched();
         match wheel.phase {
-            ScrollPhase::Ended if !self.scroll.borrow_mut().lift().is_empty() => {
-                self.request_scroll_frame();
+            ScrollPhase::Ended => {
+                let returning = !self.scroll.borrow_mut().lift().is_empty();
+                let thrown = allowed && self.scroll_settings().coast.framework_throws() && {
+                    let stretch = self.stretch_for(wheel.phase);
+                    let layout = self.layout.borrow();
+                    self.scroll
+                        .borrow_mut()
+                        .throw(&layout, at.since_origin(), stretch)
+                };
+                if returning || thrown {
+                    self.request_scroll_frame();
+                }
             }
             ScrollPhase::Started if allowed => self.scroll.borrow_mut().touch(&[]),
             ScrollPhase::Moved | ScrollPhase::Momentum if allowed => {

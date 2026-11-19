@@ -1,5 +1,6 @@
 //! Everything the desktop decides about scrolling, as one value.
 
+use crate::scroll::coast::Coast;
 use crate::scroll::direction::ScrollDirection;
 use crate::scroll::elastic::Elastic;
 use crate::scroll::motion::WheelMotion;
@@ -43,13 +44,15 @@ pub struct ScrollSettings {
     pub wheel: WheelMotion,
     /// Which inputs may drag a container past its own end.
     pub elastic: Elastic,
+    /// Who carries the content on after the fingers lift from a precision surface.
+    pub coast: Coast,
 }
 
 impl ScrollSettings {
     /// What an ordinary desktop means by a scroll.
     ///
-    /// Three lines per detent, the direction already settled by the input stack, and a detent that
-    /// arrives whole. Three is not a taste: it is what the applications already on such a desktop
+    /// Three lines per detent, the direction already settled by the input stack, a detent that
+    /// arrives whole, and a lift the framework carries on from. Three is not a taste: it is what the applications already on such a desktop
     /// do, and a framework whose wheel travels a third as far as everything else on the screen is
     /// a framework that feels broken while every one of its own numbers is self-consistent.
     pub const fn desktop() -> Self {
@@ -58,6 +61,7 @@ impl ScrollSettings {
             direction: ScrollDirection::AsReported,
             wheel: WheelMotion::Discrete,
             elastic: Elastic::Kinetic,
+            coast: Coast::Framework,
         }
     }
 
@@ -82,6 +86,12 @@ impl ScrollSettings {
     /// The same with a different answer about which inputs may stretch an edge.
     pub const fn with_elastic(mut self, elastic: Elastic) -> Self {
         self.elastic = elastic;
+        self
+    }
+
+    /// The same with a different answer about who carries the content on after a lift.
+    pub const fn with_coast(mut self, coast: Coast) -> Self {
+        self.coast = coast;
         self
     }
 

@@ -5,6 +5,7 @@ use core::time::Duration;
 use zgui_geom::{Device, DevicePx, Point, Size};
 
 use crate::motion::{Step, stopped};
+use crate::stretch::Stretch;
 
 /// How much of a fling's speed survives one second.
 ///
@@ -18,12 +19,28 @@ const REMAINING_PER_SECOND: f32 = 0.002;
 pub struct Momentum {
     /// Device pixels per second, in the direction the content is moving.
     velocity: Size<DevicePx, Device>,
+    /// Whether the speed left at an end carries the edge past it.
+    at_end: Stretch,
 }
 
 impl Momentum {
-    /// A fling at `velocity`, in device pixels per second.
+    /// A fling at `velocity`, in device pixels per second, that stops at an end.
     pub fn new(velocity: Size<DevicePx, Device>) -> Self {
-        Self { velocity }
+        Self {
+            velocity,
+            at_end: Stretch::Refused,
+        }
+    }
+
+    /// The same fling, with `stretch` deciding what its speed does at an end.
+    pub fn stretching(mut self, stretch: Stretch) -> Self {
+        self.at_end = stretch;
+        self
+    }
+
+    /// The speed the fling has left, when that speed may carry an edge past its end.
+    pub fn speed_at_end(&self) -> Option<Size<DevicePx, Device>> {
+        self.at_end.is_permitted().then_some(self.velocity)
     }
 
     /// Spends `elapsed` of it, from wherever the container is now.

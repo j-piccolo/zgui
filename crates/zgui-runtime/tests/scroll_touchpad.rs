@@ -60,11 +60,25 @@ impl Pad {
         Self::build(NESTED, rows, true)
     }
 
-    fn build(css: &str, rows: usize, tall: bool) -> Self {
-        let mut harness = support::app_with_text_on(
-            Headless::new(),
+    /// The same, on a platform that sends its own momentum after the fingers lift.
+    fn streamed(css: &str, rows: usize) -> Self {
+        let settings = zgui_platform::ScrollSettings::desktop()
+            .with_coast(zgui_platform::scroll::Coast::Platform);
+        Self::build_on(
+            Headless::new().with_scroll_settings(settings),
             css,
-            move |cx: &mut zgui_view::BuildCx<'_>| {
+            rows,
+            false,
+        )
+    }
+
+    fn build(css: &str, rows: usize, tall: bool) -> Self {
+        Self::build_on(Headless::new(), css, rows, tall)
+    }
+
+    fn build_on(platform: Headless, css: &str, rows: usize, tall: bool) -> Self {
+        let mut harness =
+            support::app_with_text_on(platform, css, move |cx: &mut zgui_view::BuildCx<'_>| {
                 use zgui_view::{IntoView, View};
                 let mut port = zgui_elements::column().class("port");
                 for _ in 0..rows {
@@ -75,8 +89,7 @@ impl Pad {
                     root = root.child(zgui_elements::column().class("tall"));
                 }
                 Box::new(root.into_view().build(cx))
-            },
-        );
+            });
         harness.settle(8);
         Self {
             harness,
@@ -98,8 +111,7 @@ impl Pad {
             modifiers: Modifiers::NONE,
             timestamp: Timestamp::from_origin(self.stamp),
         });
-        // The frame that scrolls, and the one after it that tests the pointer's hover again.
-        self.harness.settle(3);
+        self.harness.settle(6);
     }
 
     /// Fingers down, then each delta of `moves` in turn.
@@ -329,7 +341,7 @@ fn the_end_of_a_gesture_over_nothing_that_scrolls_still_lets_go() {
 
 #[test]
 fn momentum_that_reaches_the_end_bounces_once_and_the_rest_is_dropped() {
-    let mut pad = Pad::new(LIST, 10);
+    let mut pad = Pad::streamed(LIST, 10);
     let port = pad.port();
     // The list scrolls 80 pixels. A flick downwards, then the platform's momentum.
     pad.drag(&[(0.0, 10.0), (0.0, 10.0)]);
@@ -357,7 +369,7 @@ fn momentum_that_reaches_the_end_bounces_once_and_the_rest_is_dropped() {
 
 #[test]
 fn momentum_after_a_lift_with_the_edge_stretched_is_dropped() {
-    let mut pad = Pad::new(LIST, 10);
+    let mut pad = Pad::streamed(LIST, 10);
     let port = pad.port();
     pad.drag(&[(0.0, -60.0)]);
     pad.lift();
@@ -372,4 +384,91 @@ fn momentum_after_a_lift_with_the_edge_stretched_is_dropped() {
     pad.send(0.0, 0.0, ScrollPhase::Ended);
     pad.run(40);
     assert!(pad.settled());
+}
+
+#[test]
+fn a_flick_carries_the_content_on_after_the_fingers_lift() {
+    let mut pad = Pad::new(LIST, 200);
+    let port = pad.port();
+    pad.drag(&[(0.0, 20.0), (0.0, 20.0), (0.0, 20.0)]);
+    pad.lift();
+    let lifted = pad.offset_of(port).y.0;
+
+    let mut seen = vec![lifted];
+    for _ in 0..120 {
+        pad.run(1);
+        seen.push(pad.offset_of(port).y.0);
+    }
+    let travelled = seen.last().expect("a frame ran") - lifted;
+    assert!(
+        travelled > 100.0,
+        "the content stopped where the fingers lifted: {seen:?}"
+    );
+    assert!(
+        seen.windows(2).all(|pair| pair[1] >= pair[0]),
+        "the content did not slow to a stop: {seen:?}"
+    );
+    assert!(
+        !pad.window().scroll().borrow().is_animating(),
+        "the throw never stopped"
+    );
+}
+
+#[test]
+fn a_flick_that_reaches_the_end_bounces_off_it_and_returns() {
+    let mut pad = Pad::new(LIST, 12);
+    let port = pad.port();
+    // The list scrolls 120 pixels, and the flick is thrown further than that.
+    pad.drag(&[(0.0, 20.0), (0.0, 20.0), (0.0, 20.0)]);
+    pad.lift();
+
+    let mut peak: f32 = 0.0;
+    for _ in 0..120 {
+        pad.run(1);
+        peak = peak.max(pad.stretch_of(port).height.0);
+    }
+    assert_eq!(pad.offset_of(port).y.0, 120.0);
+    assert!(
+        peak > 2.0 && peak < 60.0,
+        "the bounce off the end travelled {peak}"
+    );
+    assert!(pad.settled(), "the bounce never came back");
+}
+
+#[test]
+fn fingers_that_rest_before_they_lift_throw_nothing() {
+    let mut pad = Pad::new(LIST, 200);
+    let port = pad.port();
+    pad.drag(&[(0.0, 20.0), (0.0, 20.0), (0.0, 20.0)]);
+    pad.stamp += Duration::from_millis(400);
+    pad.lift();
+    let lifted = pad.offset_of(port).y.0;
+    pad.run(30);
+    assert_eq!(pad.offset_of(port).y.0, lifted);
+}
+
+#[test]
+fn a_touch_catches_content_that_was_thrown() {
+    let mut pad = Pad::new(LIST, 200);
+    let port = pad.port();
+    pad.drag(&[(0.0, 20.0), (0.0, 20.0), (0.0, 20.0)]);
+    pad.lift();
+    pad.run(3);
+    pad.send(0.0, 0.0, ScrollPhase::Started);
+    let caught = pad.offset_of(port).y.0;
+    pad.run(30);
+    assert_eq!(pad.offset_of(port).y.0, caught);
+    pad.stamp += Duration::from_millis(400);
+    pad.lift();
+}
+
+#[test]
+fn a_platform_that_sends_its_own_momentum_gets_no_throw() {
+    let mut pad = Pad::streamed(LIST, 200);
+    let port = pad.port();
+    pad.drag(&[(0.0, 20.0), (0.0, 20.0), (0.0, 20.0)]);
+    pad.lift();
+    let lifted = pad.offset_of(port).y.0;
+    pad.run(30);
+    assert_eq!(pad.offset_of(port).y.0, lifted);
 }

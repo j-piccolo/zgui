@@ -16,6 +16,7 @@ use zgui_geom::{Device, DevicePx, Point, Size};
 use zgui_layout::LayoutStore;
 
 use crate::chain;
+use crate::motion::{Momentum, Motion};
 use crate::scroller::Scroller;
 use crate::stretch::Stretch;
 
@@ -113,7 +114,10 @@ impl Gesture {
             self.rail = Some(Rail::for_first(delta));
         }
         let along = self.rail.unwrap_or(Rail::Free).along(delta);
-        self.measure(along, at);
+        // The event that ends a gesture carries no movement, and says nothing about the speed.
+        if !chain::negligible(along) {
+            self.measure(along, at);
+        }
         along
     }
 
@@ -287,6 +291,45 @@ impl Scroller {
             };
         }
         returning
+    }
+
+    /// Throws the latched container at the speed the gesture had when its fingers lifted at `at`.
+    ///
+    /// For a platform that sends no momentum after the lift. Call it after [`Scroller::lift`].
+    /// The content travels on and slows, and with `stretch` permitted the speed it reaches an end
+    /// with carries the edge past it. A gesture that lifted with an edge displaced, or whose
+    /// fingers rested before they lifted, throws nothing. Returns whether a motion started.
+    pub fn throw(&mut self, store: &LayoutStore, at: Duration, stretch: Stretch) -> bool {
+        let Some(gesture) = self.gesture.as_mut() else {
+            return false;
+        };
+        if gesture.stage != Stage::Lifted {
+            return false;
+        }
+        gesture.stage = Stage::Spent;
+        let rested = gesture
+            .last
+            .is_none_or(|last| at.saturating_sub(last).as_secs_f32() > STALE);
+        let (Some(container), false) = (gesture.latched, rested) else {
+            return false;
+        };
+        let velocity = gesture.velocity;
+        if crate::motion::stopped(velocity) {
+            return false;
+        }
+        let share = chain::absorb(
+            self.offset_of(container),
+            self.hand_limit_for(store, container),
+            velocity,
+        );
+        if chain::negligible(share.taken) {
+            return false;
+        }
+        self.motions.insert(
+            container,
+            Motion::Fling(Momentum::new(velocity).stretching(stretch)),
+        );
+        true
     }
 
     /// Forgets the gesture, letting go of every edge it held.

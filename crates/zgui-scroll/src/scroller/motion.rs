@@ -4,8 +4,11 @@ use core::time::Duration;
 
 use smallvec::SmallVec;
 use zgui_dom::NodeKey;
+use zgui_geom::{DevicePx, Size};
 use zgui_layout::LayoutStore;
 
+use crate::chain;
+use crate::motion::Motion;
 use crate::scroller::Scroller;
 
 impl Scroller {
@@ -47,6 +50,10 @@ impl Scroller {
                 continue;
             };
             let step = motion.advance(at, elapsed);
+            let speed = match motion {
+                Motion::Fling(momentum) => momentum.speed_at_end(),
+                Motion::Smooth(_) => None,
+            };
             if step.done {
                 self.motions.remove(&container);
             }
@@ -57,13 +64,32 @@ impl Scroller {
                 if !step.done {
                     self.motions.remove(&container);
                 }
-                continue;
+            } else {
+                self.compose(container);
+                // The listener hears about the whole movement, on the frame it happened, whether
+                // or not it moved a pixel: `scrollTop` is exact, and a virtualiser reading it must
+                // not see a scroll arrive in steps of a pixel.
+                self.record(container, at, landed);
             }
-            self.compose(container);
-            // The listener hears about the whole movement, on the frame it happened, whether or
-            // not it moved a pixel: `scrollTop` is exact, and a virtualiser reading it must not
-            // see a scroll arrive in steps of a pixel.
-            self.record(container, at, landed);
+            // A fling that may stretch carries its edge past the end at the speed it has left.
+            if let Some(speed) = speed {
+                let limit = self.hand_limit_for(store, container);
+                let past = |limit: f32, to: f32, landed: f32, speed: f32| {
+                    if limit > 0.0 && (to - landed).abs() >= 0.01 {
+                        speed
+                    } else {
+                        0.0
+                    }
+                };
+                let thrown = Size::new(
+                    DevicePx(past(limit.x.0, step.to.x.0, landed.x.0, speed.width.0)),
+                    DevicePx(past(limit.y.0, step.to.y.0, landed.y.0, speed.height.0)),
+                );
+                if !chain::negligible(thrown) {
+                    self.motions.remove(&container);
+                    self.displace(container, self.overscroll_of(container).thrown(thrown));
+                }
+            }
             if self.composed.of(container) != drawn_at {
                 touched.push(container);
             }
