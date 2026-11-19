@@ -997,6 +997,23 @@ impl Runtime {
                         self.forget_unopened(token, CloseReason::Desktop);
                     }
                 }
+                WindowCommand::Show(token) => {
+                    let found = self
+                        .live
+                        .iter()
+                        .find(|live| live.token == token)
+                        .map(|live| (live.surface, live.handle.clone()));
+                    if let Some((surface, handle)) = found
+                        && handle.take_show_owed()
+                    {
+                        // The images first: nothing of this turn has reached the device or the
+                        // desktop yet, so neither keeps the rebuild waiting.
+                        if let Some(window) = surface.and_then(|id| self.window_mut(id)) {
+                            window.restore_presentation();
+                        }
+                        handle.show_surface();
+                    }
+                }
                 WindowCommand::Close(token) => {
                     self.close_token(cx, token, CloseReason::Application);
                     closed_any = true;

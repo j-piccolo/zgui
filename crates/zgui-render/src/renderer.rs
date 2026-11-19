@@ -162,6 +162,16 @@ pub trait Renderer {
         self.release_cached_targets()
     }
 
+    /// Builds again the images [`Renderer::release_presentation`] gave back, at the extent they
+    /// had, for a surface about to be shown.
+    ///
+    /// The next frame would build them anyway. Asked for first, before the frame that shows the
+    /// surface has uploaded anything and before the desktop has been told to show it, the build
+    /// waits for neither: on Mesa's Wayland integration that is the difference between one
+    /// millisecond and tens. A surface shown at another extent builds them twice. The default
+    /// does nothing, which is right for a renderer that released nothing.
+    fn restore_presentation(&mut self) {}
+
     /// How long the last frame waited to be handed a surface to present into.
     ///
     /// A queued presentation mode makes the acquisition the loop's only brake: with every image in

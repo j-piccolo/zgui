@@ -315,6 +315,14 @@ impl ConfiguredSurface {
         true
     }
 
+    /// Rebuilds the swap chain at the window's extent now, if [`ConfiguredSurface::park`] left
+    /// that owed to the next frame. A frame that finds it built rebuilds nothing.
+    pub fn unpark(&mut self, gpu: &Gpu) {
+        if self.parked {
+            self.apply(gpu);
+        }
+    }
+
     /// The swap chain extent that holds frames of `used` pixels: `used` itself, or with cropping
     /// what [`cropped_extent`] keeps.
     fn extent_for(&self, used: Size<i32, Device>) -> Size<i32, Device> {

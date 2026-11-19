@@ -873,6 +873,11 @@ impl Window {
         }
     }
 
+    /// Builds again what a hidden window's maintenance gave back, for a window about to be shown.
+    pub(crate) fn restore_presentation(&mut self) {
+        self.renderer.restore_presentation();
+    }
+
     /// Services a maintenance-only deadline without building or presenting a frame.
     pub(crate) fn maintain(&mut self, timestamp: zgui_vocab::Timestamp) {
         self.maintenance_due = None;

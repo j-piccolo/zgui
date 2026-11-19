@@ -509,6 +509,10 @@ impl Renderer for WgpuRenderer {
         freed
     }
 
+    fn restore_presentation(&mut self) {
+        self.presentation.unpark(&self.gpu);
+    }
+
     fn release_presentation(&mut self) -> u64 {
         let mut freed = self.release_cached_targets();
         // A texture of the swap chain must not outlive it, and a frame held for a surface nothing

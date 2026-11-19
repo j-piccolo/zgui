@@ -150,6 +150,13 @@ impl Presentation {
         }
     }
 
+    /// Builds a surface's images again after [`Presentation::park`], at the extent they had.
+    pub fn unpark(&mut self, gpu: &Gpu) {
+        if let Self::Surface(surface) = self {
+            surface.unpark(gpu);
+        }
+    }
+
     /// Gives a surface's swap chain images back until the next frame, see
     /// [`ConfiguredSurface::park`](crate::gpu::surface::ConfiguredSurface::park). Returns whether
     /// they are given back.

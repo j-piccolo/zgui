@@ -178,6 +178,8 @@ pub(crate) enum WindowCommand {
     },
     /// Close a window, without asking what it thinks about that.
     Close(WindowToken),
+    /// Show a window the application hid.
+    Show(WindowToken),
     /// Give every focus grab the surfaces of its windows.
     SyncGrabs,
     /// Ask the desktop to lock the session.
@@ -255,6 +257,18 @@ impl WindowCommands {
                 token,
                 spec: Box::new(spec),
             });
+        self.ping();
+    }
+
+    /// Asks for a hidden window to be shown.
+    ///
+    /// Queued and not done where it is asked for, because the runtime has something to do first
+    /// that only it can: see [`WindowHandle::set_visible`](crate::windows::WindowHandle::set_visible).
+    pub(crate) fn show(&self, token: WindowToken) {
+        self.inner
+            .borrow_mut()
+            .queue
+            .push_back(WindowCommand::Show(token));
         self.ping();
     }
 

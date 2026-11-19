@@ -52,6 +52,8 @@ pub(crate) struct WindowShared {
     pub(crate) surface: RefCell<Option<Weak<dyn Surface>>>,
     /// Whether the window has closed for good.
     pub(crate) closed: Cell<bool>,
+    /// Whether a show was asked for and has not been carried out or taken back.
+    pub(crate) show_owed: Cell<bool>,
     /// Whether a platform-driven move or resize was begun since the last frame.
     ///
     /// Read by the frame, which then tells the router the press it was tracking is over: the
@@ -106,6 +108,7 @@ impl WindowHandle {
                 id,
                 surface: RefCell::new(None),
                 closed: Cell::new(false),
+                show_owed: Cell::new(false),
                 drag_started: Cell::new(false),
                 commands,
                 capabilities,
@@ -473,8 +476,31 @@ impl WindowHandle {
     /// Hiding keeps the window, its graphics surface and its whole document, so showing it again
     /// soon costs one frame. A window left hidden gives back the images it presents into and the
     /// target it composes in at its next idle maintenance, and showing it then builds both again.
+    ///
+    /// A show is carried out at the end of the turn that asks for it, and before anything else
+    /// that turn would send the desktop or the graphics device: the runtime first builds again the
+    /// images the hidden window gave back. Building them is a wait for the device to be idle and
+    /// round trips to the desktop, and both are short only while neither has been handed this
+    /// turn's work. A hide asked for before then takes the show back.
     pub fn set_visible(&self, visible: bool) {
-        self.act(|surface| surface.set_visible(visible));
+        if visible {
+            if !self.shared.show_owed.replace(true) {
+                self.shared.commands.show(self.shared.id);
+            }
+            return;
+        }
+        self.shared.show_owed.set(false);
+        self.act(|surface| surface.set_visible(false));
+    }
+
+    /// Takes the show that is owed, if one still is. Returns whether one was.
+    pub(crate) fn take_show_owed(&self) -> bool {
+        self.shared.show_owed.replace(false)
+    }
+
+    /// Shows the surface now.
+    pub(crate) fn show_surface(&self) {
+        self.act(|surface| surface.set_visible(true));
     }
 
     /// Changes where a shell window sits and what it claims.

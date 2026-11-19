@@ -165,6 +165,37 @@ fn a_window_opened_hidden_stays_hidden_after_its_first_frame_until_it_is_shown()
     harness.shut_down();
 }
 
+/// A show is carried out at the end of the turn, so a hide in the same turn has to take it back:
+/// carried out anyway, it would show a window the application had just hidden.
+#[test]
+fn a_window_shown_and_hidden_in_one_turn_stays_hidden() {
+    let (mut harness, _bar, _window) = bar_and_window();
+    let popover = harness.app().scope().with(|| {
+        zgui_runtime::use_windows().open(
+            WindowOptions::layer(LayerOptions::top().with_size(320.0, 200.0)).with_visible(false),
+            zgui_elements::column,
+        )
+    });
+    harness.settle(8);
+    let surface = harness
+        .platform()
+        .offscreens()
+        .last()
+        .cloned()
+        .expect("the pop-over opened");
+
+    popover.set_visible(true);
+    popover.set_visible(false);
+    harness.settle(8);
+    assert!(!surface.is_visible(), "the hide took the show back");
+
+    popover.set_visible(true);
+    popover.set_visible(true);
+    harness.settle(8);
+    assert!(surface.is_visible(), "a show asked for twice is one show");
+    harness.shut_down();
+}
+
 /// A press on a bar, the keyboard leaving the bar for the sheet the click before it opened, then
 /// the release: the bar still hears the click.
 #[test]
