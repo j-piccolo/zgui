@@ -123,6 +123,20 @@ impl FrameOutcome {
         )
     }
 
+    /// Whether the renderer read the scene's chunk notes in producing this outcome.
+    ///
+    /// Narrower than [`FrameOutcome::retires_damage`]: a frame skipped because the surface is
+    /// occluded, or because nothing was damaged, retires its damage without recording anything,
+    /// so the insertions and retirements noted for it are still owed to the next frame that
+    /// uploads.
+    pub const fn consumes_chunk_notes(&self) -> bool {
+        self.retires_damage()
+            && !matches!(
+                self,
+                Self::Skipped(SkipReason::Occluded | SkipReason::Undamaged)
+            )
+    }
+
     /// Whether the caller should ask for another frame.
     ///
     /// False for an occluded surface, which waits for a platform event instead: honouring a redraw
@@ -209,6 +223,9 @@ mod tests {
         assert!(FrameOutcome::Presented(FrameStats::default()).retires_damage());
         assert!(FrameOutcome::Skipped(SkipReason::Timeout).retires_damage());
         assert!(FrameOutcome::Skipped(SkipReason::Occluded).retires_damage());
+        assert!(!FrameOutcome::Skipped(SkipReason::Occluded).consumes_chunk_notes());
+        assert!(!FrameOutcome::Skipped(SkipReason::Undamaged).consumes_chunk_notes());
+        assert!(!FrameOutcome::Skipped(SkipReason::Unacquired).consumes_chunk_notes());
         assert!(FrameOutcome::Skipped(SkipReason::Outdated).retires_damage());
         assert!(FrameOutcome::Skipped(SkipReason::Validation).retires_damage());
         assert!(FrameOutcome::Recovered.retires_damage());

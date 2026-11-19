@@ -586,7 +586,18 @@ impl Scene {
     }
 
     /// Notes a chunk that ceased to exist, until the notes are cleared.
+    ///
+    /// An insertion of the same chunk still in the log goes: the notes of a window that is not
+    /// being drawn stand until it is, and each insertion holds its chunk's primitives. The
+    /// retirement is noted all the same, for a renderer that read the insertion from a log it
+    /// was then handed again.
     pub fn note_chunk_retired(&mut self, revision: u64) {
+        let inserted = self.chunk_notes.iter().rposition(
+            |note| matches!(note, ChunkNote::Inserted { revision: held, .. } if *held == revision),
+        );
+        if let Some(at) = inserted {
+            self.chunk_notes.remove(at);
+        }
         self.chunk_notes.push(ChunkNote::Retired { revision });
     }
 

@@ -591,9 +591,14 @@ impl Window {
         if outcome.retires_damage() {
             self.damage = DamageSet::new();
             self.damage_extent = self.renderer.target().map(|target| target.size);
-            // The chunk notes were consumed by the same submission. A skipped frame keeps them
-            // for the next drawn one, and anything noted after this point — a budget eviction —
-            // stands until then.
+        }
+        // The chunk notes were consumed by the submission, where there was one. A frame that never
+        // reached the renderer's uploads keeps them for the next that does, and anything noted
+        // after this point — a budget eviction — stands until then. A frame skipped for an
+        // occluded surface or for no damage retires its damage and uploaded nothing: clearing
+        // the notes there forgets the retirement of every chunk a hidden window's document
+        // dropped, and the renderer keeps those chunks resident for as long as it lives.
+        if outcome.consumes_chunk_notes() {
             self.scene.clear_chunk_notes();
         }
         // A drawing drawn from a stretched layer, or deferred by the layer budget, is encoded
