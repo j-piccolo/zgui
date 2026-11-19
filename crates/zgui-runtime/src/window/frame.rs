@@ -131,6 +131,12 @@ impl Window {
                     self.damage = DamageSet::full();
                     self.reconfigure = true;
                 }
+                if *occluded && !self.occluded {
+                    // A window hidden long after its last frame has had its maintenance already:
+                    // this one is for what it holds as a hidden window.
+                    self.maintenance_due =
+                        Some(self.clock.now() + crate::window::MAINTENANCE_DELAY);
+                }
                 self.occluded = *occluded;
                 self.handle.set_occluded(*occluded);
                 moved
@@ -786,7 +792,11 @@ impl Window {
         // A frame being held back owes a moment of its own, and it is the only source that owes one
         // for a frame that has already been asked for. Without it a window whose whole reason to
         // draw is the input it has already queued is held and never woken again.
-        let held = self.present.due();
+        //
+        // Not for a hidden surface: its held frame is never presented, the frame that shows it
+        // again is drawn whole, and a moment that never retires would keep the maintenance below
+        // waiting behind it for as long as the surface stays hidden.
+        let held = self.present.due().filter(|_| !self.occluded);
         // The frame the renderer asked for and could not be given. Excluded while the surface is
         // hidden for the same reason the animation and the blink are — and deliberately *not*
         // excluded while it is starved, because under the latch this moment is the probe, and the
@@ -826,6 +836,17 @@ impl Window {
                 .flatten()
                 .fold(earliest, Instant::max)
         });
+        // A hidden window's maintenance is not kept waiting behind a frame: no frame of a hidden
+        // window presents, and a render moment already past (a reconfiguration owed since before
+        // it was hidden) would come first on every turn, for as long as the window stays hidden.
+        if self.occluded
+            && let Some(maintenance) = self.maintenance_due
+        {
+            return Some(ScheduledDeadline {
+                at: maintenance,
+                kind: DeadlineKind::Maintenance,
+            });
+        }
         match (render, self.maintenance_due) {
             (Some(render), Some(maintenance)) if render <= maintenance => Some(ScheduledDeadline {
                 at: render,
@@ -851,6 +872,11 @@ impl Window {
     pub(crate) fn maintain(&mut self, timestamp: zgui_vocab::Timestamp) {
         self.maintenance_due = None;
         self.renderer.release_idle_resources();
+        if self.occluded {
+            // A window nothing shows keeps its document and gives back its pixels. Un-occluding
+            // reconfigures the renderer and damages everything, which is what allocates them again.
+            self.renderer.release_presentation();
+        }
         // The release gave back the chunks the renderer held resident, and a chunk is made
         // resident again only when it is noted. Content that never encodes again would otherwise
         // be uploaded afresh by every frame that draws it, for the rest of the window's life; noted

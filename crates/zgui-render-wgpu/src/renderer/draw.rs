@@ -509,6 +509,39 @@ impl Renderer for WgpuRenderer {
         freed
     }
 
+    fn release_presentation(&mut self) -> u64 {
+        let mut freed = self.release_cached_targets();
+        // A texture of the swap chain must not outlive it, and a frame held for a surface nothing
+        // shows is never presented.
+        self.held = false;
+        self.discard_staged();
+        self.present_composed_next = false;
+        self.pending_shift = None;
+        if !self.presentation.park(&self.gpu) {
+            return freed;
+        }
+        // The composed target goes with the images: it is the surface's size as well, and the
+        // frame that shows the surface again is drawn whole. One a frame of the hidden window
+        // allocated again since (a configure it was sent) goes the same way.
+        let smallest = crate::target::scene_texture::size_class(1);
+        let allocated = self.composed.texture().size();
+        if (allocated.width, allocated.height) == (smallest as u32, smallest as u32) {
+            return freed;
+        }
+        freed += self.composed.bytes();
+        self.composed = crate::target::scene_texture::SceneTexture::new(
+            &self.gpu,
+            zgui_geom::Size::new(1, 1),
+            self.composed.format(),
+        );
+        freed = freed.saturating_sub(self.composed.bytes());
+        self.composed_binding =
+            super::bind_composed(&self.gpu, &self.pipelines.borrow(), &self.composed);
+        self.history.forget();
+        self.full_damage_next = true;
+        freed
+    }
+
     fn acquire_block(&self) -> std::time::Duration {
         self.acquire_block
     }

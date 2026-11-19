@@ -150,6 +150,18 @@ impl Presentation {
         }
     }
 
+    /// Gives a surface's swap chain images back until the next frame, see
+    /// [`ConfiguredSurface::park`](crate::gpu::surface::ConfiguredSurface::park). Returns whether
+    /// they are given back.
+    pub fn park(&mut self, gpu: &Gpu) -> bool {
+        match self {
+            Self::Surface(surface) => surface.park(gpu),
+            // A texture is what a test reads or a caller scans out: it is not this renderer's to
+            // take away between frames.
+            Self::Offscreen(_) | Self::Supplied(_) => false,
+        }
+    }
+
     /// Notes that the surface asked to be reconfigured at the next opportunity.
     pub fn request_reconfigure(&mut self) {
         match self {

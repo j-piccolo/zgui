@@ -471,7 +471,8 @@ impl WindowHandle {
     /// Shows or hides the window.
     ///
     /// Hiding keeps the window, its graphics surface and its whole document, so showing it again
-    /// costs one frame.
+    /// soon costs one frame. A window left hidden gives back the images it presents into and the
+    /// target it composes in at its next idle maintenance, and showing it then builds both again.
     pub fn set_visible(&self, visible: bool) {
         self.act(|surface| surface.set_visible(visible));
     }
