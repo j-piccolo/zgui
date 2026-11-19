@@ -53,6 +53,11 @@ impl Window {
         self.surface_focused = focused;
     }
 
+    /// Records that the window is a shell layer, whose press is not ended by losing the keyboard.
+    pub(crate) fn keep_press_without_focus(&mut self, keep: bool) {
+        self.press_outlives_focus = keep;
+    }
+
     /// What the window itself does when the surface gains or loses the keyboard.
     fn surface_focus_settled(&mut self, focused: bool, timestamp: Timestamp) {
         if focused {
@@ -68,7 +73,9 @@ impl Window {
         }
         self.settle_focused_field(timestamp);
         self.disable_text_input();
-        self.cancel_press();
+        if !self.press_outlives_focus {
+            self.cancel_press();
+        }
         // The caret stops rather than merely being hidden. A blink is a deadline the loop parks on,
         // so a window that kept blinking behind whatever is in front of it would wake twice a
         // second, for ever, to draw an insertion point nobody can see.

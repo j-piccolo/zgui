@@ -6,7 +6,7 @@
 
 mod support;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use zgui_geom::{CssPx, Edges};
@@ -162,5 +162,57 @@ fn a_window_opened_hidden_stays_hidden_after_its_first_frame_until_it_is_shown()
     popover.set_visible(true);
     harness.settle(8);
     assert!(surface.is_visible());
+    harness.shut_down();
+}
+
+/// A press on a bar, the keyboard leaving the bar for the sheet the click before it opened, then
+/// the release: the bar still hears the click.
+#[test]
+fn a_press_on_a_shell_window_outlives_the_keyboard_leaving_it() {
+    use zgui_geom::Point;
+    use zgui_vocab::{Modifiers, PointerAction, PointerEvent, Timestamp};
+
+    let clicks = Rc::new(Cell::new(0_u32));
+    let clicked = Rc::clone(&clicks);
+    let handler = App::new()
+        .with_layer(
+            LayerOptions::top()
+                .with_anchors(Edges::new(true, true, false, true))
+                .with_size(400.0, 34.0)
+                .with_keyboard(KeyboardInteractivity::OnDemand),
+        )
+        .with_stylesheet("column { display: block; width: 400px; height: 34px }")
+        .with_renderer(Box::new(support::capture))
+        .into_handler(move |cx: &mut BuildCx<'_>| {
+            let clicked = Rc::clone(&clicked);
+            Box::new(
+                zgui_elements::column()
+                    .on(zgui_view::events::CLICK, move |_| {
+                        clicked.set(clicked.get() + 1);
+                    })
+                    .into_view()
+                    .build(cx),
+            )
+        })
+        .expect("the reactive runtime installs");
+    let mut harness = Harness::new(handler);
+    harness.settle(8);
+    let pointer = |action| SurfaceEvent::Pointer {
+        action,
+        event: PointerEvent::mouse(Point::new(CssPx(200.0), CssPx(17.0))),
+        modifiers: Modifiers::NONE,
+        timestamp: Timestamp::ORIGIN,
+    };
+
+    harness.deliver_to_first(SurfaceEvent::Focused(true));
+    harness.deliver_to_first(pointer(PointerAction::Moved));
+    harness.deliver_to_first(pointer(PointerAction::Pressed));
+    harness.settle(2);
+    harness.deliver_to_first(SurfaceEvent::Focused(false));
+    harness.settle(2);
+    harness.deliver_to_first(pointer(PointerAction::Released));
+    harness.settle(2);
+
+    assert_eq!(clicks.get(), 1);
     harness.shut_down();
 }

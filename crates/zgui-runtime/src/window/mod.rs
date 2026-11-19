@@ -467,6 +467,12 @@ pub struct Window {
     /// report by doing the work of losing focus it never had. A shell window is treated as not
     /// focused, because the desktop gives it the keyboard with an edge of its own, if at all.
     surface_focused: bool,
+    /// Whether a press outlives the surface losing the keyboard: a shell window's does.
+    ///
+    /// An ordinary window that loses the keyboard has lost the pointer with it, and the release
+    /// never comes. A shell window loses the keyboard to the shell's own next surface, a sheet its
+    /// bar has just opened, while the pointer is still on it and the release is on its way.
+    press_outlives_focus: bool,
     /// The shortcuts of the application menu's actions, shared by every window.
     menu_keys: crate::desktop::MenuKeys,
     /// The menu actions whose shortcut a key press of this frame ran.
@@ -811,6 +817,7 @@ impl Window {
             translucent: false,
             occluded: false,
             surface_focused: true,
+            press_outlives_focus: false,
             menu_keys: crate::desktop::MenuKeys::default(),
             menu_fired: Vec::new(),
             extent: None,

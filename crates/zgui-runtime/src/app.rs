@@ -923,6 +923,10 @@ impl Runtime {
         window.set_scroll_settings(cx.scroll_settings());
         window.set_translucent(translucent);
         window.assume_surface_focus(starts_focused);
+        window.keep_press_without_focus(matches!(
+            self.live[index].spec.attributes.role,
+            zgui_platform::SurfaceRole::Layer(_)
+        ));
         // A window opened hidden is hidden before its first frame, so that frame never reaches
         // the screen. Only the first open: a window shown since then is shown again on a resume.
         if std::mem::take(&mut self.live[index].spec.hidden) {
