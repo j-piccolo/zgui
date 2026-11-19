@@ -17,7 +17,8 @@
 //! | [`direction`] | whether the framework must apply the person's preference or the desktop already did |
 //! | [`motion`] | whether a detent arrives whole or as a stream the platform is already animating |
 //! | [`elastic`] | whether an edge follows a pull past the end, and for which inputs |
-//! | [`settings`] | the four answers together, as one value a backend hands over |
+//! | [`coast`] | who carries the content on after the fingers lift |
+//! | [`settings`] | the five answers together, as one value a backend hands over |
 //!
 //! # The sign convention
 //!
@@ -33,11 +34,13 @@
 //! that is written down in one crate and assumed in another is a convention that survives until
 //! somebody reads only the second one.
 
+pub mod coast;
 pub mod direction;
 pub mod elastic;
 pub mod motion;
 pub mod settings;
 
+pub use crate::scroll::coast::Coast;
 pub use crate::scroll::direction::ScrollDirection;
 pub use crate::scroll::elastic::Elastic;
 pub use crate::scroll::motion::WheelMotion;

@@ -4,7 +4,7 @@
 //! here, once, so that nothing above the platform seam has to ask which desktop it is on — and so
 //! that the day one of them turns out to be wrong there is a single place to correct it.
 
-use zgui_platform::scroll::{ScrollDirection, ScrollSettings, WheelMotion};
+use zgui_platform::scroll::{Coast, ScrollDirection, ScrollSettings, WheelMotion};
 
 /// What a scroll from this desktop's devices means.
 ///
@@ -27,6 +27,7 @@ pub fn desktop_scroll_settings() -> ScrollSettings {
         .with_lines_per_notch(LINES_PER_NOTCH)
         .with_direction(ScrollDirection::AsReported)
         .with_wheel(WHEEL)
+        .with_coast(COAST)
 }
 
 /// How many lines of text one detent of a notched wheel asks for here.
@@ -62,6 +63,19 @@ const WHEEL: WheelMotion = WheelMotion::Discrete;
 /// again would be animating each of its thirty little deltas separately, which crawls.
 #[cfg(target_os = "macos")]
 const WHEEL: WheelMotion = WheelMotion::Continuous;
+
+/// Who carries the content on after the fingers lift.
+///
+/// A Wayland compositor reports the stop of a touchpad scroll and sends nothing after it. X11 and
+/// Win32 report no end of a gesture, so the answer is never consulted there.
+#[cfg(not(target_os = "macos"))]
+const COAST: Coast = Coast::Framework;
+
+/// Who carries the content on after the fingers lift.
+///
+/// The macOS window server sends the momentum after the lift as its own stream of scrolls.
+#[cfg(target_os = "macos")]
+const COAST: Coast = Coast::Platform;
 
 #[cfg(test)]
 mod tests {
