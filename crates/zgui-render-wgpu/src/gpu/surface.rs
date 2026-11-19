@@ -108,6 +108,9 @@ pub struct ConfiguredSurface {
     crop: bool,
     /// The largest extent a texture may have on this device.
     largest: i32,
+    /// Whether the swap chain was rebuilt at one pixel by [`ConfiguredSurface::park`], and not
+    /// yet at the window's extent again.
+    parked: bool,
 }
 
 impl ConfiguredSurface {
@@ -183,6 +186,7 @@ impl ConfiguredSurface {
             used: Size::new(1, 1),
             crop: false,
             largest: gpu.capabilities().max_texture_size,
+            parked: false,
         };
         // A swap chain larger than the largest texture fails validation, and the device opener
         // then refuses the adapter. The first frame configures again at the window's real extent.
@@ -270,6 +274,42 @@ impl ConfiguredSurface {
         );
         self.configured = true;
         self.reconfigure_pending = false;
+        self.parked = false;
+    }
+
+    /// Rebuilds the swap chain at one pixel, and owes the one at the window's extent to the next
+    /// frame. Returns whether the swap chain is now that small.
+    ///
+    /// For a surface nothing is being shown on. A swap chain's images are allocated whole when it
+    /// is built (four of them under `Mailbox` on Mesa's Wayland integration) and stay allocated
+    /// for as long as it lives, shown or not: on an integrated GPU that is system memory, four
+    /// times the window's pixels. wgpu has no call that takes a configuration away, so the
+    /// smallest one stands in for none.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a surface texture acquired from this surface is still alive, as
+    /// [`ConfiguredSurface::apply`] does.
+    pub fn park(&mut self, gpu: &Gpu) -> bool {
+        if self.parked {
+            return true;
+        }
+        if !self.configured {
+            return false;
+        }
+        let small = wgpu::SurfaceConfiguration {
+            width: 1,
+            height: 1,
+            ..self.config.clone()
+        };
+        self.surface.configure(gpu.device(), &small);
+        zgui_profile::latency::note(
+            "cfg.park",
+            format!("{}x{}", self.config.width, self.config.height),
+        );
+        self.parked = true;
+        self.reconfigure_pending = true;
+        true
     }
 
     /// The swap chain extent that holds frames of `used` pixels: `used` itself, or with cropping

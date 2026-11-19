@@ -150,6 +150,18 @@ pub trait Renderer {
         self.release_cached_targets()
     }
 
+    /// Frees what only a surface on screen needs: the images it presents into and the target its
+    /// frames are composed in. Returns how many bytes of targets that returned.
+    ///
+    /// For a window the desktop is not showing. Both are the window's size (the images several
+    /// times over) and neither holds anything a hidden window needs: the next
+    /// [`Renderer::configure`] allocates them again, and the renderer then
+    /// [owes the whole surface](Renderer::owes_whole_surface). The default frees the pooled targets
+    /// only, which is all a renderer that composes straight into what it was given holds.
+    fn release_presentation(&mut self) -> u64 {
+        self.release_cached_targets()
+    }
+
     /// How long the last frame waited to be handed a surface to present into.
     ///
     /// A queued presentation mode makes the acquisition the loop's only brake: with every image in
