@@ -272,6 +272,14 @@ impl<A: AppHandler> WaylandApp<A> {
             let cx = WaylandCx::new(&self.state);
             self.handler.surface_event(&cx, id, event);
         }
+        // A surface shown since this turn's held frames were handed over (by another surface's
+        // frame, or by the application between them) is told so before it draws. Told a turn
+        // later, it composes a frame as a hidden surface, presents nothing, and draws again.
+        let shown = surface.shared().visibility_edge();
+        if let Some(event) = shown {
+            let cx = WaylandCx::new(&self.state);
+            self.handler.surface_event(&cx, id, event);
+        }
         let due = {
             let mut shared = surface.shared();
             let ahead = shared.compose_ahead_now(now);
