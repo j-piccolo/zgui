@@ -35,23 +35,25 @@ fn optional_features() -> wgpu::Features {
     }
 }
 
-/// The smallest memory block the allocator reserves on a device.
-const MIN_MEMORY_BLOCK: u64 = 8 << 20;
-
-/// The largest memory block the allocator reserves on a device.
-const MAX_MEMORY_BLOCK: u64 = 256 << 20;
+/// The size of the memory blocks the allocator shares between small allocations: the smallest it
+/// takes.
+const MEMORY_BLOCK: u64 = 4 << 20;
 
 /// How the device's allocator sizes its memory blocks.
 ///
-/// wgpu's default reserves a 128 MiB device block and a 64 MiB host block for the first
-/// allocations, and a small window uses less than 8 MiB of them. On an integrated GPU, all of that
-/// is system memory. Here the first blocks are 8 MiB and 4 MiB, and each new block is twice the
-/// size of the last up to 256 MiB, so a large document gets the default's block size after five
-/// more allocations. An allocation larger than the current block gets a block of its own, as with
-/// the default.
+/// Every block is [`MEMORY_BLOCK`], and an allocation larger than that gets memory of its own,
+/// which goes back to the system when the allocation is freed. On an integrated GPU all of it is
+/// system memory, so what matters is what is still reserved after a texture is dropped.
+///
+/// A block is returned only once nothing is left in it, and a block that grows (wgpu's default
+/// reserves 128 MiB, and a block twice the last one's size was tried here) is one a single glyph
+/// atlas page or vertex buffer keeps whole: a desktop shell that had opened and closed a
+/// full-screen window held 124 MiB of blocks for 15 MiB of textures. With a fixed small block the
+/// targets sized by a window (the composed target, the group targets) are each their own
+/// allocation, and what a long-lived small allocation can keep reserved is one block.
 fn memory_hints() -> wgpu::MemoryHints {
     wgpu::MemoryHints::Manual {
-        suballocated_device_memory_block_size: MIN_MEMORY_BLOCK..MAX_MEMORY_BLOCK,
+        suballocated_device_memory_block_size: MEMORY_BLOCK..MEMORY_BLOCK,
     }
 }
 
