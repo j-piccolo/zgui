@@ -63,13 +63,18 @@ impl Owed {
 /// such a commit is delivered at once, and presented at once. Later redraws wait for the callback,
 /// so a stream of input over a still surface draws once per refresh, as before.
 ///
-/// # A press composes ahead
+/// # A press does not wait
 ///
 /// A press over a surface that animates finds a callback owed for a buffer. A press that waits
 /// for that callback opens what it opens one refresh late, and a second surface the press shows
-/// waits behind the first. So the first redraw a press asks for is composed at once and held: it
-/// is presented when the callback arrives, so there is still one commit per callback. Motion does
-/// not compose ahead, so an animation keeps its pace under a moving pointer.
+/// waits behind the first. So the first redraw a press asks for is composed at once and presented
+/// at once. The callback owed is answered when the compositor next draws, and a frame held until
+/// then is committed just after that draw: it is shown one refresh later than the same frame
+/// committed before it. The buffer it replaces is an animation's step that was never shown, and
+/// the compositor draws once per refresh whichever buffer it finds. One press per callback is
+/// answered so: a second press before the compositor has answered composes ahead and is held, so
+/// a surface commits at most two buffers per refresh. Motion does neither, so an animation keeps
+/// its pace under a moving pointer.
 ///
 /// # A new extent does not wait
 ///
@@ -129,6 +134,11 @@ pub struct Pacer {
     /// Whether the next redraw answers a new extent, so it neither waits for nor is held behind an
     /// owed callback.
     resizing: bool,
+    /// Whether the redraw last delivered answered a press over an owed callback, so its frame is
+    /// not held behind that callback.
+    urgent: bool,
+    /// Whether a press's frame was presented over the callback now owed.
+    raced: bool,
 }
 
 impl Pacer {
@@ -145,6 +155,8 @@ impl Pacer {
             press: false,
             for_input: false,
             resizing: false,
+            urgent: false,
+            raced: false,
         }
     }
 
@@ -164,7 +176,7 @@ impl Pacer {
         self.input = true;
     }
 
-    /// Records that a press arrived for this surface, see "A press composes ahead".
+    /// Records that a press arrived for this surface, see "A press does not wait".
     pub const fn press(&mut self) {
         self.input = true;
         self.press = true;
@@ -214,6 +226,7 @@ impl Pacer {
         }
         self.wanted = false;
         self.for_input = self.input;
+        self.urgent = self.press && !self.raced && matches!(self.owed, Owed::Callback(_));
         self.input = false;
         self.press = false;
         true
@@ -224,10 +237,14 @@ impl Pacer {
     /// Not while a callback for a buffer is owed: two buffers with no callback between them is a
     /// client racing ahead of the display, and only the second of them is ever shown. The frame
     /// is held instead, and [`Pacer::take_present`] hands it over when the callback arrives or is
-    /// given up on. A callback asked for with no buffer does not hold a frame.
+    /// given up on. A callback asked for with no buffer does not hold a frame, and neither does
+    /// the first press since the callback was asked for, see "A press does not wait".
     pub fn present_now(&mut self, now: Instant) -> bool {
+        let urgent = std::mem::take(&mut self.urgent);
         let owed = !self.resizing
+            && !urgent
             && matches!(self.owed, Owed::Callback(since) if !self.watchdog.expired(since, now));
+        self.raced |= urgent;
         self.held = owed;
         !owed
     }
@@ -283,6 +300,7 @@ impl Pacer {
             // The compositor was asked for a callback and has not answered in long enough that it
             // is not going to. Waiting further is the freeze; drawing again is one wasted frame.
             self.owed = Owed::Nothing;
+            self.raced = false;
             self.abandoned += 1;
             visibility.unanswered();
             tracing::debug!(
@@ -313,11 +331,13 @@ impl Pacer {
     /// No callback was asked for, so none is owed.
     pub const fn commit_withheld(&mut self) {
         self.owed = Owed::Nothing;
+        self.raced = false;
     }
 
     /// Records the compositor answering with a frame callback.
     pub const fn callback(&mut self) {
         self.owed = Owed::Nothing;
+        self.raced = false;
     }
 
     /// Whether a callback is owed and has been owed for too long.
@@ -337,6 +357,7 @@ impl Pacer {
     /// being drawn will never arrive, and waiting for it would leave a visible surface stopped.
     pub const fn hidden(&mut self, hidden: bool) {
         self.owed = Owed::Nothing;
+        self.raced = false;
         if !hidden {
             self.wanted = true;
         }
@@ -490,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn a_press_over_an_animating_surface_composes_ahead_and_is_held() {
+    fn a_press_over_an_animating_surface_is_presented_at_once_and_the_next_is_held() {
         let mut pacer = Pacer::new();
         let now = Instant::now();
         let mut visibility = shown();
@@ -507,8 +528,19 @@ mod tests {
             "the press composes at once"
         );
         assert!(
+            pacer.present_now(now),
+            "and its frame does not wait for the callback"
+        );
+        pacer.committed(now);
+        pacer.press();
+        pacer.request();
+        assert!(
+            pacer.take(&mut visibility, now),
+            "a second press before the callback composes ahead"
+        );
+        assert!(
             !pacer.present_now(now),
-            "and its frame waits for the callback"
+            "and its frame waits for the callback: two buffers a refresh at most"
         );
         pacer.press();
         pacer.request();
@@ -524,15 +556,30 @@ mod tests {
             pacer.take(&mut visibility, now),
             "the press that waited behind the held frame composes ahead"
         );
-        assert!(!pacer.present_now(now));
-        pacer.callback();
-        assert!(pacer.take_present(&mut visibility, now));
+        assert!(
+            pacer.present_now(now),
+            "and is the first press over its callback"
+        );
         pacer.committed(now);
         pacer.request();
         assert!(
             !pacer.take(&mut visibility, now),
             "the next frame waits for its callback"
         );
+    }
+
+    #[test]
+    fn a_frame_that_answers_no_press_is_held_behind_the_callback() {
+        let mut pacer = Pacer::new();
+        let now = Instant::now();
+        let mut visibility = shown();
+        pacer.committed(now);
+        pacer.compose_ahead(true);
+        pacer.request();
+        assert!(pacer.take(&mut visibility, now));
+        assert!(!pacer.present_now(now), "composed ahead, and held");
+        pacer.callback();
+        assert!(pacer.take_present(&mut visibility, now));
     }
 
     #[test]

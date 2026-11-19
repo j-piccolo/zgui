@@ -175,7 +175,7 @@ impl<A: AppHandler> WaylandApp<A> {
         let events = std::mem::take(&mut self.state.out);
         for (id, event) in events {
             // Input lets the redraw it asks for through a callback that only keeps the chain alive,
-            // and a press composes ahead of a callback owed for a buffer.
+            // and a press is not kept behind a callback owed for a buffer.
             if event.is_input()
                 && let Some(surface) = self.state.live.surface(id)
             {
